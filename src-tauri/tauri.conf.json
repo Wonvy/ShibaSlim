@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ShibaSlim",
+  "mainBinaryName": "ShibaSlim",
+  "version": "../package.json",
+  "identifier": "io.github.wonvy.shibaslim",
+  "build": {
+    "frontendDist": "splash",
+    "beforeDevCommand": "npm run desktop:stage",
+    "beforeBuildCommand": "npm run desktop:stage"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg", "nsis", "appimage", "deb"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "externalBin": ["binaries/shibaslim-node"],
+    "resources": {
+      "engine/": "engine/"
+    },
+    "publisher": "Wonvy",
+    "copyright": "MIT License · Wonvy",
+    "category": "Productivity",
+    "shortDescription": "Compress the images inside PowerPoint files",
+    "longDescription": "ShibaSlim shrinks .pptx files by resizing and re-encoding the pictures to what each slide actually shows. Text, layout and animations are kept as they are.",
+    "homepage": "https://github.com/Wonvy/ShibaSlim",
+    "license": "MIT",
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
+      "entitlements": "Entitlements.plist"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": false
+      }
+    },
+    "linux": {
+      "deb": {
+        "section": "graphics"
+      }
+    }
+  }
+}

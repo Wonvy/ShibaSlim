@@ -278,6 +278,7 @@ input[type="range"]:disabled { cursor: default; opacity: 0.5; }
 .row-actions { display: flex; gap: 4px; }
 .row-actions button { padding: 4px 9px; font-size: 12.5px; }
 .row-actions [data-act="remove"] { width: 28px; padding: 4px 0; color: var(--muted); }
+.desktop .row-actions [data-act="download"] { display: none; }
 .row:not([data-state="done"]) [data-act="download"],
 .row:not([data-state="done"]) [data-act="reveal"] { display: none; }
 

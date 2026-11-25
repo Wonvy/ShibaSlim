@@ -36,12 +36,31 @@
 - **Sized to how images are shown**: works out how large each image actually appears on its slides and keeps only the pixels needed, accounting for crops and group scaling.
 - **One clarity setting**: a single number from 1 to 100 sets resolution, JPEG quality and PNG colour reduction together.
 - **Before/after comparison**: picks a few random slides and lets you drag a divider between the original and the compressed version, with up to 4× zoom.
-- **Graphical interface and CLI**: drag files or whole folders into a browser page, or batch-process folders from the command line.
+- **Desktop app, web page and CLI**: install the app and double-click, with no Node.js needed, and share it as a single file; or use it in a browser, or batch-process folders from the command line.
 - **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
 - **Your files are safe**: originals are left alone by default and results are saved as new files; the graphical interface never overwrites an existing file. Every result is re-read and checked before it is written.
 - **Runs locally**: nothing is uploaded to the internet. Works on macOS, Windows and Linux.
 
 ## Quick start
+
+### Desktop app (recommended)
+
+Download the installer for your system from [Releases](https://github.com/Wonvy/ShibaSlim/releases) and open ShibaSlim like any other app. Nothing else, not even Node.js, needs to be installed.
+
+| System | Which file |
+|---|---|
+| macOS · Apple silicon (M1 and later) | the `.dmg` with `aarch64` in its name |
+| macOS · Intel | the `.dmg` with `x64` in its name |
+| Windows 10 / 11 | `x64-setup.exe` |
+| Linux | `.AppImage` (runs as is) or `.deb` (Debian / Ubuntu package) |
+
+> [!IMPORTANT]
+> The installers are not yet notarized by Apple or code-signed for Windows, so the system stops the first launch. Allow it once and it will not ask again:
+> - **macOS**: when it says the app cannot be opened, click **Done**, then go to **System Settings → Privacy & Security** and click **Open Anyway** near the bottom.
+> - **Windows**: when you see "Windows protected your PC", click **More info → Run anyway**.
+> - **Linux**: make the AppImage executable (`chmod +x`) before running it; if it complains about FUSE, install `libfuse2` (`libfuse2t64` from Ubuntu 24.04 on).
+
+### From source (in a browser)
 
 Install [Node.js](https://nodejs.org) 20.9 or later first.
 
@@ -69,6 +88,8 @@ The ShibaSlim page opens in your browser:
 2. Move the **Clarity** slider, or pick **Small**, **Everyday** or **High**.
 3. To check the result first, click **Compare** next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
+
+The desktop app shows the same interface with a few differences: **Compare** opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so there is no **Quit** button.
 
 The switches at the top right set the theme (System / Light / Dark) and language (System / 中文 / English). Both follow the system by default and change along with it; a choice you make is remembered, and the comparison page uses it too.
 
@@ -221,6 +242,26 @@ npm test
 
 The tests build presentations covering many cases with pptxgenjs on the fly, with no external files. The local server behind the interface is tested too (token and Host checks, uploads, compression, never overwriting existing files and more); the page itself was checked by hand in a browser.
 
+### Building the desktop app
+
+The desktop app uses [Tauri](https://tauri.app) for its window and ships its own copy of the official Node.js runtime, which runs exactly the same engine as `shibaslim gui` (again served only on `127.0.0.1`). That is why users do not need to install anything. Building it needs Node.js and [Rust](https://rustup.rs); on Linux, also the [system libraries Tauri lists](https://tauri.app/start/prerequisites/).
+
+```bash
+npm run desktop:dev      # open the desktop window in development mode
+npm run desktop:build    # build installers for this system into src-tauri/target/release/bundle/
+```
+
+Before bundling, `desktop/stage.mjs` runs automatically: it compiles the TypeScript, installs sharp's native library for the target platform, and downloads the same Node.js version from nodejs.org, checking its SHA-256. An Apple silicon Mac can also build the Intel version: `npm run desktop:build -- --target x86_64-apple-darwin` (output in `src-tauri/target/x86_64-apple-darwin/release/bundle/`). After changing `docs/logo.svg`, run `node desktop/icons.mjs` to regenerate the app icons.
+
+**Releasing a new version**: update the version in `package.json`, commit, and push a tag that starts with `v`:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+GitHub Actions then tests and builds on macOS (Apple silicon and Intel), Windows and Linux, and creates a draft release with the installers; check it and click **Publish**. You can also run "Desktop app" by hand from the repository's Actions tab; the installers are attached to that run.
+
 <details>
 <summary><b>Code layout</b></summary>
 
@@ -237,5 +278,8 @@ The tests build presentations covering many cases with pptxgenjs on the fly, wit
 | `src/gui.ts` | Local server behind the interface: uploads, queue, progress updates |
 | `src/messages.ts` | Chinese and English text for the pages, plus the theme and language switcher they share |
 | `gui/` | The interface page (HTML, CSS, JS, no build step) |
+| `desktop/engine.mjs` | Entry point of the engine inside the desktop app: starts the local server and talks to the window over stdio |
+| `desktop/stage.mjs` | Prepares the engine files, plus Node.js and sharp for the target platform, before bundling |
+| `src-tauri/` | The desktop app's shell (Rust / Tauri): starts the engine, shows the page, opens comparison windows |
 
 </details>

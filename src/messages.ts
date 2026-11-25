@@ -121,6 +121,7 @@ const zh = {
   'gui.toast.nothing': '没有可添加的文件',
   'gui.toast.skipped': '已添加 {added} 个，跳过 {skipped} 个不是 PPT 的文件',
   'gui.toast.previewOpening': '正在生成对比页面，会在新标签页打开',
+  'gui.toast.previewWindow': '正在生成对比页面，会在新窗口打开',
   'gui.toast.popupBlocked': '浏览器拦截了新标签页，请允许本页面弹出窗口后再试',
   'gui.toast.stopping': '当前文件压缩完后停止',
   'gui.upload.failed': '上传失败（{status}）',
@@ -129,6 +130,7 @@ const zh = {
   'gui.api.failed': '请求失败（{status}）',
   'gui.banner.noToken': '缺少访问口令。请使用终端里显示的完整地址打开（?t= 后面那一段不能省略）。',
   'gui.banner.disconnected': '与 ShibaSlim 的连接已断开。如果关掉了终端窗口，请重新运行 shibaslim gui，并打开新的地址。',
+  'gui.banner.disconnectedDesktop': 'ShibaSlim 的压缩引擎意外停止了。请关闭窗口，重新打开 ShibaSlim。',
   'gui.banner.quit': 'ShibaSlim 已退出，可以关闭这个页面了。',
   'gui.confirmQuit': '退出后需要重新运行 shibaslim gui 才能继续使用。确定退出吗？',
 
@@ -283,6 +285,7 @@ const en: Record<MessageKey, string> = {
   'gui.toast.nothing': 'Nothing to add',
   'gui.toast.skipped': 'Added {added}, skipped {skipped} {skipped|file|files} that {skipped|is|are} not PowerPoint',
   'gui.toast.previewOpening': 'Building the comparison; it will open in a new tab',
+  'gui.toast.previewWindow': 'Building the comparison; it will open in a new window',
   'gui.toast.popupBlocked': 'The browser blocked the new tab. Allow pop-ups for this page and try again.',
   'gui.toast.stopping': 'Stopping after the current file',
   'gui.upload.failed': 'Upload failed ({status})',
@@ -291,6 +294,7 @@ const en: Record<MessageKey, string> = {
   'gui.api.failed': 'Request failed ({status})',
   'gui.banner.noToken': 'The access token is missing. Open the full address shown in the terminal, including the part after ?t=.',
   'gui.banner.disconnected': 'Lost the connection to ShibaSlim. If you closed the terminal window, run shibaslim gui again and open the new address.',
+  'gui.banner.disconnectedDesktop': 'The ShibaSlim engine stopped unexpectedly. Close this window and open ShibaSlim again.',
   'gui.banner.quit': 'ShibaSlim has stopped. You can close this page.',
   'gui.confirmQuit': 'You will need to run shibaslim gui again to keep using it. Quit now?',
 

@@ -80,6 +80,19 @@ describe('gui server', () => {
     assert.equal(data.claritySettings[0], null);
   });
 
+  test('tells the page whether it runs in the desktop app', async () => {
+    assert.equal((await call('/api/state')).data.desktop, false);
+    const outDir = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
+    const desktop = await startGui({ port: 0, defaultOutDir: outDir, desktop: true });
+    try {
+      const res = await fetch(`http://127.0.0.1:${desktop.port}/api/state`, { headers: { 'X-Shiba-Token': desktop.token } });
+      assert.equal((await res.json()).desktop, true);
+    } finally {
+      await desktop.close();
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('refuses API calls without the token', async () => {
     assert.equal((await call('/api/state', { token: null })).status, 401);
     assert.equal((await call('/api/state', { token: 'wrong' })).status, 401);

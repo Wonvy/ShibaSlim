@@ -43,6 +43,8 @@ const state = {
   outDir: '',
   defaultOutDir: '',
   stopped: false,
+  /** Running inside the desktop app rather than a browser tab. */
+  desktop: false,
   /** The banner as a message key, so it can be shown again in another language. */
   banner: null,
 };
@@ -472,7 +474,7 @@ el.list.addEventListener('click', async (event) => {
     switch (button.dataset.act) {
       case 'preview':
         if (window.open(`/api/preview/${id}?t=${tok}&c=${state.clarity}`, '_blank')) {
-          toast(t('gui.toast.previewOpening'));
+          toast(t(state.desktop ? 'gui.toast.previewWindow' : 'gui.toast.previewOpening'));
         } else {
           toast(t('gui.toast.popupBlocked'));
         }
@@ -580,7 +582,7 @@ function connectEvents() {
     if (!state.stopped) hideBanner();
   };
   source.onerror = () => {
-    if (!state.stopped) showBanner('gui.banner.disconnected');
+    if (!state.stopped) showBanner(state.desktop ? 'gui.banner.disconnectedDesktop' : 'gui.banner.disconnected');
   };
 }
 
@@ -611,6 +613,10 @@ async function init() {
   }
   state.claritySettings = data.claritySettings;
   state.defaultOutDir = data.defaultOutDir;
+  state.desktop = data.desktop === true;
+  // In the desktop app the window's close button quits, and results are already saved where they belong.
+  document.documentElement.classList.toggle('desktop', state.desktop);
+  el.quit.hidden = state.desktop;
   const saved = loadSettings();
   state.clarity = Math.min(100, Math.max(1, Math.round(Number(saved.clarity) || data.defaultClarity)));
   state.outDir = typeof saved.outDir === 'string' && saved.outDir ? saved.outDir : data.defaultOutDir;

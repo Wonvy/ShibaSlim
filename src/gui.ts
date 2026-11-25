@@ -24,6 +24,11 @@ export interface GuiOptions {
   defaultOutDir?: string;
   /** Called when the page asks the server to shut down. */
   onQuit?: () => void;
+  /**
+   * Set by the desktop app. The page then leaves out what only makes sense in a browser tab:
+   * the quit button (closing the window quits) and downloading results (they are already saved).
+   */
+  desktop?: boolean;
 }
 
 export interface GuiServer {
@@ -271,7 +276,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (resource === 'state' && method === 'GET') {
-      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform });
+      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true });
     }
 
     if (resource === 'events' && method === 'GET') {

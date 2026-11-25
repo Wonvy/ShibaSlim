@@ -33,12 +33,31 @@
 - **按显示尺寸缩图**：读取每张图片在幻灯片上实际显示多大，只保留需要的像素，裁剪和组合缩放都会算进去。
 - **一个清晰度参数**：1–100 一个数字，同时调好分辨率、JPEG 质量和 PNG 减色，不用研究参数。
 - **压缩前后对比**：随机抽几页，左右拖动分界线对比原图和压缩后，可以放大到 4 倍看细节。
-- **图形界面和命令行**：在浏览器里拖入文件或整个文件夹，或者用命令行批量处理目录。
+- **桌面版、网页版和命令行**：下载安装包双击就能用，不用装 Node.js，发给别人也只是一个文件；也可以在浏览器里用，或者用命令行批量处理目录。
 - **浅色 / 深色，中文 / English**：页面默认跟随系统的主题和语言，也可以在右上角手动切换，选择会被记住。
 - **不会弄丢文件**：默认不动原文件，结果另存为新文件；图形界面从不覆盖已有文件。每次写出前都会重新读取结果校验一遍。
 - **本机运行**：文件不会上传到网络，macOS、Windows、Linux 通用。
 
 ## 快速开始
+
+### 桌面版（推荐）
+
+到 [Releases](https://github.com/Wonvy/ShibaSlim/releases) 下载对应系统的安装包，装好后像普通软件一样打开。电脑上不需要装 Node.js 或其他任何东西。
+
+| 系统 | 下载哪个 |
+|---|---|
+| macOS · Apple 芯片（M1 及以后） | 文件名带 `aarch64` 的 `.dmg` |
+| macOS · Intel 芯片 | 文件名带 `x64` 的 `.dmg` |
+| Windows 10 / 11 | `x64-setup.exe` |
+| Linux | `.AppImage`（直接运行）或 `.deb`（Debian / Ubuntu 安装包） |
+
+> [!IMPORTANT]
+> 安装包还没有经过苹果公证和 Windows 代码签名，第一次打开时系统会拦一下，放行一次以后就不会再问：
+> - **macOS**：提示无法打开时先点“完成”，然后打开 **系统设置 → 隐私与安全性**，在页面下方点 **仍要打开**。
+> - **Windows**：出现“Windows 已保护你的电脑”时，点 **更多信息 → 仍要运行**。
+> - **Linux**：AppImage 要先 `chmod +x` 再运行；如果提示缺少 FUSE，安装 `libfuse2`（Ubuntu 24.04 起叫 `libfuse2t64`）。
+
+### 从源码运行（网页版）
 
 需要先安装 [Node.js](https://nodejs.org) 20.9 或更高版本。
 
@@ -66,6 +85,8 @@ npm install
 2. 拖动“清晰度”滑块，或者点“很小 / 日常 / 高清”。
 3. 想先看效果，就点文件右侧的“对比”，会在新标签页打开对比页面。这一步只是试压，不保存任何文件。
 4. 点“开始压缩”。完成后可以直接“下载”，或者点“显示”在文件夹中找到它。
+
+桌面版和网页版是同一个界面，只有几处不同：“对比”在新窗口里打开；结果已经直接保存在“保存到”的文件夹里，点“显示”就能找到，所以没有“下载”按钮；关掉窗口就是退出，也就没有“退出”按钮。
 
 页面右上角可以切换主题（跟随系统 / 浅色 / 深色）和语言（跟随系统 / 中文 / English）。默认都跟随系统，系统设置改变时页面会实时跟着变；手动选择后会被记住，对比页面也会沿用同样的选择。
 
@@ -218,6 +239,26 @@ npm test
 
 测试会用 pptxgenjs 现场生成各种情况的演示文稿，不依赖外部文件；图形界面的本地服务也有测试，覆盖口令和 Host 校验、上传、压缩、不覆盖已有文件等。页面本身是在浏览器里手动验证的。
 
+### 打包桌面版
+
+桌面版用 [Tauri](https://tauri.app) 做窗口，安装包里自带一份官方的 Node.js 运行时，跑的是和 `shibaslim gui` 完全相同的压缩引擎（同样只在 `127.0.0.1` 上提供），所以用户的电脑上什么都不用装。打包需要 Node.js 和 [Rust](https://rustup.rs)；Linux 还需要 [Tauri 列出的系统库](https://tauri.app/start/prerequisites/)。
+
+```bash
+npm run desktop:dev      # 以开发模式打开桌面窗口
+npm run desktop:build    # 打包当前系统的安装包，输出到 src-tauri/target/release/bundle/
+```
+
+打包前会自动运行 `desktop/stage.mjs`：编译 TypeScript，按目标平台安装 sharp 的原生库，再从 nodejs.org 下载与当前相同版本的 Node.js 并校验 SHA-256。在 Apple 芯片的 Mac 上也能打 Intel 版：`npm run desktop:build -- --target x86_64-apple-darwin`（输出在 `src-tauri/target/x86_64-apple-darwin/release/bundle/`）。换了 `docs/logo.svg` 后运行 `node desktop/icons.mjs` 重新生成应用图标。
+
+**发布新版本**：改好 `package.json` 里的版本号并提交，然后推送一个 `v` 开头的标签：
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+GitHub Actions 会在 macOS（Apple 芯片和 Intel）、Windows、Linux 上分别测试并打包，然后创建一个 Release 草稿，检查无误后点“发布”即可。也可以在仓库的 Actions 页面手动运行 “Desktop app”，打好的安装包会作为附件出现在这次运行里。
+
 <details>
 <summary><b>代码结构</b></summary>
 
@@ -234,5 +275,8 @@ npm test
 | `src/gui.ts` | 图形界面的本地服务：上传、排队压缩、进度推送 |
 | `src/messages.ts` | 页面的中英文文案，以及两个页面共用的主题和语言切换脚本 |
 | `gui/` | 图形界面的网页（HTML、CSS、JS，无需构建） |
+| `desktop/engine.mjs` | 桌面版里引擎的入口：启动本地服务，通过标准输入输出和窗口通信 |
+| `desktop/stage.mjs` | 打包前准备引擎文件，以及目标平台的 Node.js 和 sharp |
+| `src-tauri/` | 桌面版的窗口外壳（Rust / Tauri）：启动引擎、显示页面、打开对比窗口 |
 
 </details>

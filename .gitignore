@@ -5,3 +5,9 @@ dist/
 
 *.preview.html
 release/
+
+# Desktop app (Tauri): build output and files staged by desktop/stage.mjs
+src-tauri/target/
+src-tauri/gen/
+src-tauri/engine/
+src-tauri/binaries/
