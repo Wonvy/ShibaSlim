@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShibaSlim</title>
+<link rel="stylesheet" href="style.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+        <rect width="64" height="64" rx="14" fill="var(--accent)"/>
+        <rect x="18" y="20" width="28" height="24" rx="3" fill="#fff"/>
+        <path d="M22 39l6-7 5 5 4-4 5 6z" fill="var(--accent)"/>
+        <path d="M8 32h6M50 32h6M11 28l4 4-4 4M53 28l-4 4 4 4" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </svg>
+      <div>
+        <h1>ShibaSlim</h1>
+        <p class="tagline">压缩 PPT 里的图片，文字和版式保持不变</p>
+      </div>
+    </div>
+    <button type="button" class="ghost" id="quit" title="关闭本地服务">退出</button>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <section class="card settings" aria-label="压缩设置">
+    <div class="field">
+      <div class="field-head">
+        <label for="clarity">清晰度</label>
+        <output id="clarity-value" for="clarity">60</output>
+      </div>
+      <div class="slider-row">
+        <span class="end">更小</span>
+        <input type="range" id="clarity" min="1" max="100" step="1" value="60">
+        <span class="end">更清晰</span>
+      </div>
+      <div class="presets" role="group" aria-label="常用清晰度">
+        <button type="button" data-clarity="30">很小 · 30</button>
+        <button type="button" data-clarity="60">日常 · 60</button>
+        <button type="button" data-clarity="85">高清 · 85</button>
+      </div>
+      <p class="hint" id="clarity-detail"></p>
+    </div>
+
+    <div class="field">
+      <div class="field-head"><label for="out-dir">保存到</label></div>
+      <div class="path-row">
+        <input type="text" id="out-dir" spellcheck="false" autocomplete="off">
+        <button type="button" id="pick-dir">选择…</button>
+        <button type="button" id="open-dir">打开</button>
+      </div>
+      <p class="hint">保持原文件名；拖入文件夹时会保留子文件夹结构。已有同名文件不会被覆盖。</p>
+    </div>
+  </section>
+
+  <section class="card files" id="files" aria-label="文件">
+    <div class="empty" id="empty">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 30V10m0 0l-7 7m7-7l7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 28v8a4 4 0 004 4h20a4 4 0 004-4v-8" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+      <p class="big">把 PPT 文件或文件夹拖到这里</p>
+      <p class="hint">支持 .pptx .pptm .ppsx .ppsm .potx .potm，文件夹会包含子文件夹</p>
+      <div class="actions">
+        <button type="button" data-pick="files">选择文件</button>
+        <button type="button" data-pick="folder">选择文件夹</button>
+      </div>
+    </div>
+    <div class="list-head" id="list-head" hidden>
+      <span>文件</span>
+      <div class="actions">
+        <button type="button" class="ghost" data-pick="files">添加文件</button>
+        <button type="button" class="ghost" data-pick="folder">添加文件夹</button>
+      </div>
+    </div>
+    <ul class="list" id="list"></ul>
+  </section>
+
+  <footer class="bottom">
+    <span id="summary" class="summary">还没有文件</span>
+    <div class="actions">
+      <button type="button" id="clear" class="ghost">清空</button>
+      <button type="button" id="start" class="primary">开始压缩</button>
+    </div>
+  </footer>
+</div>
+
+<input type="file" id="file-input" multiple accept=".pptx,.pptm,.ppsx,.ppsm,.potx,.potm" hidden>
+<input type="file" id="folder-input" webkitdirectory multiple hidden>
+<div class="overlay" id="overlay" hidden><div>松开即可添加</div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

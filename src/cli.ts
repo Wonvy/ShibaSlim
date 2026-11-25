@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { glob } from 'tinyglobby';
 import { describeSettings, formatBytes, percentSaved } from './format.js';
+import { defaultOutDir, openWithSystem, startGui } from './gui.js';
+import { DEFAULT_SUFFIX, collectInputs, outputPathFor, previewPathFor } from './inputs.js';
 import { SlimError } from './opc.js';
 import {
   DEFAULT_CLARITY,
@@ -17,14 +17,12 @@ import {
 } from './optimize.js';
 import { DEFAULT_PREVIEW_PAGES } from './preview.js';
 
-const EXTENSIONS = ['pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm'];
-const EXT_RE = new RegExp(`\\.(${EXTENSIONS.join('|')})$`, 'i');
-const DEFAULT_SUFFIX = '.slim';
 
 const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
 
 用法:
   shibaslim <文件|目录|通配符 ...> [选项]
+  shibaslim gui [--port <端口>] [--no-browser]   打开图形界面（在浏览器里拖入文件）
 
 示例:
   shibaslim 汇报.pptx                      生成 汇报.slim.pptx
@@ -62,12 +60,6 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
   -V, --version           显示版本
 `;
 
-interface Item {
-  file: string;
-  /** Path relative to the directory the user pointed at; keeps sub-folders under --out-dir. */
-  rel: string;
-}
-
 interface Result {
   input: string;
   output: string | null;
@@ -91,55 +83,6 @@ function numberOption(name: string, value: string | undefined): number | undefin
   const n = Number(value);
   if (value.trim() === '' || !Number.isFinite(n)) throw new UsageError(`--${name} 需要一个数字，收到 "${value}"`);
   return n;
-}
-
-function isInside(dir: string, file: string): boolean {
-  const rel = path.relative(dir, file);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
-
-async function collectInputs(
-  args: string[],
-  recursive: boolean,
-  skipSuffix: string,
-  outDir: string | undefined,
-): Promise<{ items: Item[]; unmatched: string[] }> {
-  const items = new Map<string, Item>();
-  const unmatched: string[] = [];
-
-  // When scanning, skip Office lock files, hidden files, and our own earlier outputs.
-  const wanted = (file: string): boolean => {
-    const { name } = path.parse(file);
-    if (name.startsWith('~$') || name.startsWith('.')) return false;
-    if (skipSuffix && name.endsWith(skipSuffix)) return false;
-    if (outDir && isInside(outDir, file)) return false;
-    return true;
-  };
-
-  for (const arg of args) {
-    const info = await stat(arg).catch(() => null);
-    if (info?.isFile()) {
-      const file = path.resolve(arg);
-      items.set(file, { file, rel: path.basename(file) });
-      continue;
-    }
-    if (info?.isDirectory()) {
-      const pattern = `${recursive ? '**/' : ''}*.{${EXTENSIONS.join(',')}}`;
-      const found = await glob(pattern, { cwd: arg, caseSensitiveMatch: false, expandDirectories: false });
-      for (const rel of found.sort()) {
-        const file = path.resolve(arg, rel);
-        if (wanted(file)) items.set(file, { file, rel });
-      }
-      continue;
-    }
-    // Not an existing path: treat it as a glob, since Windows shells do not expand them.
-    const pattern = process.platform === 'win32' ? arg.replace(/\\/g, '/') : arg;
-    const found = await glob(pattern, { absolute: true, caseSensitiveMatch: false, expandDirectories: false });
-    const matches = found.map((f) => path.resolve(f)).filter((f) => EXT_RE.test(f) && wanted(f));
-    if (matches.length === 0) unmatched.push(arg);
-    for (const file of matches.sort()) items.set(file, { file, rel: path.basename(file) });
-  }
-  return { items: [...items.values()], unmatched };
 }
 
 function describe(report: OptimizeReport): string {
@@ -167,7 +110,43 @@ function imageLines(report: OptimizeReport): string[] {
   });
 }
 
+async function runGui(argv: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      port: { type: 'string' },
+      'no-browser': { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  });
+  if (values.help) {
+    console.log('用法: shibaslim gui [--port <端口>] [--no-browser]\n\n在本机启动图形界面并用浏览器打开。只监听 127.0.0.1，其他电脑无法访问。');
+    return 0;
+  }
+  const port = numberOption('port', values.port) ?? 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError('--port 需为 0 到 65535 之间的整数');
+
+  let server: Awaited<ReturnType<typeof startGui>> | undefined;
+  const shutdown = async () => {
+    await server?.close();
+    process.exit(0);
+  };
+  server = await startGui({ port, onQuit: () => void shutdown() });
+  process.once('SIGINT', () => void shutdown());
+  process.once('SIGTERM', () => void shutdown());
+
+  console.log(`ShibaSlim 已启动：${green(server.url)}`);
+  console.log(dim(`压缩结果默认保存到 ${defaultOutDir()}，可在页面里修改`));
+  console.log(dim('关闭这个窗口或按 Ctrl+C 即可退出'));
+  if (!values['no-browser']) {
+    await openWithSystem(server.url).catch(() => console.log('无法自动打开浏览器，请手动复制上面的地址'));
+  }
+  // The HTTP server keeps the process alive until the page or a signal shuts it down.
+  return new Promise<number>(() => {});
+}
+
 async function main(): Promise<number> {
+  if (process.argv[2] === 'gui') return runGui(process.argv.slice(3));
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -254,12 +233,8 @@ async function main(): Promise<number> {
   const showStatus = human && useColor && jobs === 1;
   const results = await mapPool(items, jobs, async (item): Promise<Result> => {
     const label = path.relative(process.cwd(), item.file) || item.file;
-    const { dir, name, ext } = path.parse(item.file);
-    const output = inPlace
-      ? item.file
-      : path.join(outDir ? path.join(outDir, path.dirname(item.rel)) : dir, name + suffix + ext);
-    const parsedOut = path.parse(output);
-    const previewPath = preview ? path.join(parsedOut.dir, `${parsedOut.name}.preview.html`) : undefined;
+    const output = outputPathFor(item, { inPlace, ...(outDir ? { outDir } : {}), suffix });
+    const previewPath = preview ? previewPathFor(output) : undefined;
     if (showStatus) process.stdout.write(dim(`… ${label}`));
     const clearStatus = () => {
       if (showStatus) process.stdout.write('\r\x1b[K');

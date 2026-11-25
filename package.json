@@ -1,7 +1,7 @@
 {
   "name": "shibaslim",
   "version": "0.1.0",
-  "description": "批量压缩 PPTX 文件体积的跨平台命令行工具，重点压缩内嵌图片",
+  "description": "批量压缩 PPTX 体积的跨平台工具，重点压缩内嵌图片；提供命令行和浏览器图形界面",
   "type": "module",
   "bin": {
     "shibaslim": "dist/cli.js"
@@ -15,15 +15,17 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "gui"
   ],
   "engines": {
     "node": ">=20.9"
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test test/optimize.test.mjs",
-    "prepare": "npm run build"
+    "test": "npm run build && node --test test/optimize.test.mjs test/gui.test.mjs",
+    "prepare": "npm run build",
+    "gui": "npm run build && node dist/cli.js gui"
   },
   "keywords": [
     "pptx",
@@ -32,7 +34,13 @@
     "image",
     "batch"
   ],
+  "author": "Wonvy",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Wonvy/ShibaSlim.git"
+  },
+  "homepage": "https://github.com/Wonvy/ShibaSlim",
   "dependencies": {
     "jszip": "^3.10.2",
     "saxes": "^6.0.0",
