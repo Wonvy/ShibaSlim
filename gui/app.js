@@ -115,6 +115,7 @@ function clarityLabel(c) {
 
 function renderSettings() {
   el.clarity.value = String(state.clarity);
+  el.clarity.style.setProperty('--fill', `${((state.clarity - 1) / 99) * 100}%`);
   el.clarityValue.textContent = String(state.clarity);
   el.clarityDetail.textContent = `${state.clarityDetails[state.clarity] || ''} — ${clarityLabel(state.clarity)}`;
   for (const button of el.presets) {
