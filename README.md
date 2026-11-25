@@ -257,7 +257,9 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-GitHub Actions 会在 macOS（Apple 芯片和 Intel）、Windows、Linux 上分别测试并打包，然后创建一个 Release 草稿，检查无误后点“发布”即可。也可以在仓库的 Actions 页面手动运行 “Desktop app”，打好的安装包会作为附件出现在这次运行里。
+GitHub Actions 会在 macOS（Apple 芯片和 Intel）、Windows、Linux 上分别测试并打包，全部成功后自动发布这个版本的 Release，任何人都能在 Releases 页面下载。
+
+平时每次推送到 `main`（只改 README 或 `docs/` 的除外）也会自动打包一次，安装包作为附件出现在 Actions 页面的这次运行里（需要登录 GitHub 才能下载），适合发布前先自己试用。也可以在 Actions 页面选 “Desktop app” 手动运行。
 
 <details>
 <summary><b>代码结构</b></summary>

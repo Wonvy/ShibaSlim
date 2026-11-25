@@ -260,7 +260,9 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-GitHub Actions then tests and builds on macOS (Apple silicon and Intel), Windows and Linux, and creates a draft release with the installers; check it and click **Publish**. You can also run "Desktop app" by hand from the repository's Actions tab; the installers are attached to that run.
+GitHub Actions then tests and builds on macOS (Apple silicon and Intel), Windows and Linux, and once all of them succeed it publishes a release for that version, which anyone can download from the Releases page.
+
+Every push to `main` (except changes to READMEs or `docs/` only) is also built, with the installers attached to that run on the Actions tab (downloading them needs a GitHub login), so you can try a build before releasing it. You can also run "Desktop app" by hand from the Actions tab.
 
 <details>
 <summary><b>Code layout</b></summary>

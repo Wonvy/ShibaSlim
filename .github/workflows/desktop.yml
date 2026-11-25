@@ -1,7 +1,9 @@
 # Builds the desktop app for macOS (Apple silicon and Intel), Windows and Linux.
 #
-# - Run it by hand from the Actions tab ("Run workflow"): the installers are attached to the run as artifacts.
-# - Push a tag such as v0.2.0: the installers are also put on a draft GitHub release for that tag.
+# - Every push to main (except README/docs-only changes), and "Run workflow" on the Actions tab:
+#   the installers are attached to that run as artifacts (sign in to GitHub to download them).
+# - Push a tag such as v0.2.0: the installers are also published as a GitHub release for that tag,
+#   which anyone can download from the Releases page.
 #
 # Signing: macOS builds are ad-hoc signed and Windows builds are unsigned, so first launches show a
 # security prompt (see README). Add Apple / Windows signing secrets here later to remove it.
@@ -9,7 +11,9 @@ name: Desktop app
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
+    paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
 
 permissions:
@@ -92,7 +96,7 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
 
   release:
-    name: Draft release
+    name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
@@ -106,6 +110,5 @@ jobs:
 
       - uses: softprops/action-gh-release@v3
         with:
-          draft: true
           generate_release_notes: true
           files: installers/*
