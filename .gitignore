@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.slim.pptx
+.DS_Store
+
+*.preview.html
+release/

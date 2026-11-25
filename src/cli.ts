@@ -1,0 +1,326 @@
+#!/usr/bin/env node
+import { stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { parseArgs } from 'node:util';
+import { glob } from 'tinyglobby';
+import { describeSettings, formatBytes, percentSaved } from './format.js';
+import { SlimError } from './opc.js';
+import {
+  DEFAULT_CLARITY,
+  mapPool,
+  optimizeFile,
+  resolveSettings,
+  type FileOptions,
+  type OptimizeReport,
+  type PresetName,
+} from './optimize.js';
+import { DEFAULT_PREVIEW_PAGES } from './preview.js';
+
+const EXTENSIONS = ['pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm'];
+const EXT_RE = new RegExp(`\\.(${EXTENSIONS.join('|')})$`, 'i');
+const DEFAULT_SUFFIX = '.slim';
+
+const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
+
+用法:
+  shibaslim <文件|目录|通配符 ...> [选项]
+
+示例:
+  shibaslim 汇报.pptx                      生成 汇报.slim.pptx
+  shibaslim 汇报.pptx -c 40 -n --preview   试试清晰度 40：只生成对比页面，不写 pptx
+  shibaslim ./课件 -r -o ./课件-压缩版      递归处理整个目录，输出到另一个目录
+
+清晰度:
+  -c, --clarity <1-100>   数值越高越清晰、文件越大，默认 ${DEFAULT_CLARITY}
+                          参考：30 很小 · 60 日常（默认）· 85 高清，PNG 无损 · 100 几乎不缩小
+  -p, --preset <名称>     清晰度的别名：max = 30、balanced = 60、hq = 85
+
+对比页面:
+      --preview           同时生成网页，随机抽几页，左右拖拽对比压缩前后
+      --preview-pages <n> 对比页面抽取的页数，默认 ${DEFAULT_PREVIEW_PAGES}
+
+输出:
+  -o, --out-dir <目录>    输出目录（保持原文件名与子目录结构）
+      --suffix <后缀>     输出文件名后缀，默认 .slim；指定 --out-dir 时默认不加
+      --in-place          直接覆盖原文件（有损且不可恢复，请先备份）
+  -n, --dry-run           只报告能省多少，不写 pptx（--preview 的页面照常生成）
+
+高级（单独覆盖清晰度算出的某一项）:
+      --ppi <数值>        图片按显示尺寸保留的像素密度
+  -q, --quality <1-100>   JPEG 质量
+      --png-quality <n>   PNG 减色质量 1-100，0 表示无损
+      --keep-png          不把 PNG 转成 JPEG
+      --strip-thumbnail   删除文件管理器里显示的预览缩略图
+
+其他:
+  -r, --recursive         递归处理子目录
+  -j, --jobs <n>          同时处理的文件数，默认 1
+  -v, --verbose           列出每张图片的处理结果
+      --json              以 JSON 输出结果
+  -h, --help              显示帮助
+  -V, --version           显示版本
+`;
+
+interface Item {
+  file: string;
+  /** Path relative to the directory the user pointed at; keeps sub-folders under --out-dir. */
+  rel: string;
+}
+
+interface Result {
+  input: string;
+  output: string | null;
+  preview?: string;
+  report?: OptimizeReport;
+  error?: string;
+}
+
+class UsageError extends Error {}
+
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const paint = (code: number, text: string) => (useColor ? `\x1b[${code}m${text}\x1b[0m` : text);
+const green = (t: string) => paint(32, t);
+const red = (t: string) => paint(31, t);
+const dim = (t: string) => paint(2, t);
+// Legacy Windows console fonts lack the check/cross glyphs.
+const MARK = process.platform === 'win32' ? { ok: '√', fail: '×' } : { ok: '✓', fail: '✗' };
+
+function numberOption(name: string, value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (value.trim() === '' || !Number.isFinite(n)) throw new UsageError(`--${name} 需要一个数字，收到 "${value}"`);
+  return n;
+}
+
+function isInside(dir: string, file: string): boolean {
+  const rel = path.relative(dir, file);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+async function collectInputs(
+  args: string[],
+  recursive: boolean,
+  skipSuffix: string,
+  outDir: string | undefined,
+): Promise<{ items: Item[]; unmatched: string[] }> {
+  const items = new Map<string, Item>();
+  const unmatched: string[] = [];
+
+  // When scanning, skip Office lock files, hidden files, and our own earlier outputs.
+  const wanted = (file: string): boolean => {
+    const { name } = path.parse(file);
+    if (name.startsWith('~$') || name.startsWith('.')) return false;
+    if (skipSuffix && name.endsWith(skipSuffix)) return false;
+    if (outDir && isInside(outDir, file)) return false;
+    return true;
+  };
+
+  for (const arg of args) {
+    const info = await stat(arg).catch(() => null);
+    if (info?.isFile()) {
+      const file = path.resolve(arg);
+      items.set(file, { file, rel: path.basename(file) });
+      continue;
+    }
+    if (info?.isDirectory()) {
+      const pattern = `${recursive ? '**/' : ''}*.{${EXTENSIONS.join(',')}}`;
+      const found = await glob(pattern, { cwd: arg, caseSensitiveMatch: false, expandDirectories: false });
+      for (const rel of found.sort()) {
+        const file = path.resolve(arg, rel);
+        if (wanted(file)) items.set(file, { file, rel });
+      }
+      continue;
+    }
+    // Not an existing path: treat it as a glob, since Windows shells do not expand them.
+    const pattern = process.platform === 'win32' ? arg.replace(/\\/g, '/') : arg;
+    const found = await glob(pattern, { absolute: true, caseSensitiveMatch: false, expandDirectories: false });
+    const matches = found.map((f) => path.resolve(f)).filter((f) => EXT_RE.test(f) && wanted(f));
+    if (matches.length === 0) unmatched.push(arg);
+    for (const file of matches.sort()) items.set(file, { file, rel: path.basename(file) });
+  }
+  return { items: [...items.values()], unmatched };
+}
+
+function describe(report: OptimizeReport): string {
+  const optimized = report.images.filter((i) => i.status === 'optimized').length;
+  const parts = [`图片 ${optimized}/${report.images.length}`];
+  if (report.duplicatesRemoved > 0) parts.push(`去重 ${report.duplicatesRemoved}`);
+  if (report.orphansRemoved > 0) parts.push(`清理无用媒体 ${report.orphansRemoved}`);
+  if (report.thumbnailRemoved) parts.push('已删缩略图');
+  return parts.join('，');
+}
+
+function imageLines(report: OptimizeReport): string[] {
+  return report.images.map((image) => {
+    const name = path.posix.basename(image.part);
+    if (image.status !== 'optimized') {
+      const label = image.status === 'kept' ? '保留' : '跳过';
+      return dim(`    ${name}  ${label}${image.note ? `（${image.note}）` : ''}`);
+    }
+    const renamed = image.newPart ? ` → ${path.posix.basename(image.newPart)}` : '';
+    const resized =
+      image.newWidth !== image.width || image.newHeight !== image.height
+        ? `${image.width}×${image.height} → ${image.newWidth}×${image.newHeight}`
+        : `${image.width}×${image.height}`;
+    return dim(`    ${name}${renamed}  ${resized}  ${formatBytes(image.before)} → ${formatBytes(image.after)}`);
+  });
+}
+
+async function main(): Promise<number> {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: {
+      clarity: { type: 'string', short: 'c' },
+      preset: { type: 'string', short: 'p' },
+      preview: { type: 'boolean' },
+      'preview-pages': { type: 'string' },
+      ppi: { type: 'string' },
+      quality: { type: 'string', short: 'q' },
+      'png-quality': { type: 'string' },
+      'keep-png': { type: 'boolean' },
+      'strip-thumbnail': { type: 'boolean' },
+      'out-dir': { type: 'string', short: 'o' },
+      suffix: { type: 'string' },
+      'in-place': { type: 'boolean' },
+      'dry-run': { type: 'boolean', short: 'n' },
+      recursive: { type: 'boolean', short: 'r' },
+      jobs: { type: 'string', short: 'j' },
+      verbose: { type: 'boolean', short: 'v' },
+      json: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'V' },
+    },
+  });
+
+  if (values.version) {
+    const pkg = createRequire(import.meta.url)('../package.json') as { version: string };
+    console.log(pkg.version);
+    return 0;
+  }
+  if (values.help || positionals.length === 0) {
+    console.log(HELP);
+    return values.help ? 0 : 2;
+  }
+
+  const inPlace = values['in-place'] ?? false;
+  const dryRun = values['dry-run'] ?? false;
+  const outDir = values['out-dir'] === undefined ? undefined : path.resolve(values['out-dir']);
+  if (inPlace && (outDir !== undefined || values.suffix !== undefined)) {
+    throw new UsageError('--in-place 不能与 --out-dir 或 --suffix 同时使用');
+  }
+  const suffix = values.suffix ?? (outDir ? '' : DEFAULT_SUFFIX);
+  if (/[\\/]/.test(suffix)) throw new UsageError('--suffix 不能包含路径分隔符');
+  if (!inPlace && !outDir && suffix === '') {
+    throw new UsageError('--suffix 为空时需要指定 --out-dir，或使用 --in-place 覆盖原文件');
+  }
+  const jobs = Math.max(1, Math.floor(numberOption('jobs', values.jobs) ?? 1));
+
+  const options: FileOptions = { dryRun };
+  const clarity = numberOption('clarity', values.clarity);
+  if (clarity !== undefined) options.clarity = clarity;
+  if (values.preset !== undefined) options.preset = values.preset as PresetName;
+  const previewPages = numberOption('preview-pages', values['preview-pages']);
+  if (previewPages !== undefined) {
+    if (!Number.isInteger(previewPages) || previewPages < 1) throw new UsageError('--preview-pages 需为正整数');
+    options.previewPages = previewPages;
+  }
+  const preview = (values.preview ?? false) || previewPages !== undefined;
+  const ppi = numberOption('ppi', values.ppi);
+  if (ppi !== undefined) options.ppi = ppi;
+  const quality = numberOption('quality', values.quality);
+  if (quality !== undefined) options.jpegQuality = quality;
+  const pngQuality = numberOption('png-quality', values['png-quality']);
+  if (pngQuality !== undefined) options.pngQuality = pngQuality;
+  if (values['keep-png']) options.keepPng = true;
+  if (values['strip-thumbnail']) options.stripThumbnail = true;
+  const settings = resolveSettings(options);
+
+  const human = !values.json;
+  // Even when --out-dir drops the suffix, .slim files left by earlier runs are outputs, not inputs.
+  const skipSuffix = inPlace ? '' : suffix || DEFAULT_SUFFIX;
+  const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, skipSuffix, outDir);
+  for (const arg of unmatched) console.error(red(`找不到匹配的文件：${arg}`));
+  if (items.length === 0) {
+    console.error('没有可处理的 pptx 文件。');
+    return 1;
+  }
+
+  if (human) {
+    const note = dryRun ? '（试运行，不写 pptx）' : '';
+    console.log(dim(`清晰度 ${settings.clarity}（${describeSettings(settings)}）${note}`));
+  }
+
+  const showStatus = human && useColor && jobs === 1;
+  const results = await mapPool(items, jobs, async (item): Promise<Result> => {
+    const label = path.relative(process.cwd(), item.file) || item.file;
+    const { dir, name, ext } = path.parse(item.file);
+    const output = inPlace
+      ? item.file
+      : path.join(outDir ? path.join(outDir, path.dirname(item.rel)) : dir, name + suffix + ext);
+    const parsedOut = path.parse(output);
+    const previewPath = preview ? path.join(parsedOut.dir, `${parsedOut.name}.preview.html`) : undefined;
+    if (showStatus) process.stdout.write(dim(`… ${label}`));
+    const clearStatus = () => {
+      if (showStatus) process.stdout.write('\r\x1b[K');
+    };
+
+    try {
+      if (!inPlace && path.resolve(output) === item.file) {
+        throw new SlimError('输出路径与原文件相同；如需覆盖请使用 --in-place');
+      }
+      const report = await optimizeFile(item.file, output, previewPath ? { ...options, previewPath } : options);
+      clearStatus();
+      if (human) {
+        const detail = dim(`（${describe(report)}）`);
+        if (report.changed) {
+          const sizes = `${formatBytes(report.before)} → ${formatBytes(report.after)}`;
+          console.log(`${green(MARK.ok)} ${label}  ${sizes}  ${green('-' + percentSaved(report.before, report.after))} ${detail}`);
+        } else {
+          console.log(`${dim('-')} ${label}  ${formatBytes(report.before)}  已无压缩空间 ${detail}`);
+        }
+        if (values.verbose) for (const line of imageLines(report)) console.log(line);
+        if (previewPath) console.log(`  对比页面：${path.relative(process.cwd(), previewPath) || previewPath}`);
+      }
+      return { input: item.file, output: dryRun ? null : output, ...(previewPath ? { preview: previewPath } : {}), report };
+    } catch (err) {
+      clearStatus();
+      const message = err instanceof Error ? err.message : String(err);
+      if (human) console.log(`${red(MARK.fail)} ${label}  ${red(message)}`);
+      return { input: item.file, output: null, error: message };
+    }
+  });
+
+  const done = results.filter((r) => r.report);
+  const failed = results.length - done.length;
+  if (human) {
+    const before = done.reduce((sum, r) => sum + r.report!.before, 0);
+    const after = done.reduce((sum, r) => sum + r.report!.after, 0);
+    const failNote = failed > 0 ? red(`，${failed} 个失败`) : '';
+    console.log(
+      `\n共 ${results.length} 个文件${failNote}：${formatBytes(before)} → ${formatBytes(after)}，` +
+        `${dryRun ? '可节省' : '节省'} ${formatBytes(before - after)}（${percentSaved(before, after)}）`,
+    );
+  } else {
+    console.log(JSON.stringify(results, null, 2));
+  }
+  return failed > 0 || unmatched.length > 0 ? 1 : 0;
+}
+
+main().then(
+  (code) => {
+    process.exitCode = code;
+  },
+  (err: unknown) => {
+    // parseArgs reports bad flags with an ERR_PARSE_ARGS_* code.
+    const code = (err as { code?: string } | null)?.code ?? '';
+    if (err instanceof UsageError || err instanceof SlimError || code.startsWith('ERR_PARSE_ARGS')) {
+      console.error(red((err as Error).message));
+      console.error('使用 --help 查看用法。');
+      process.exitCode = 2;
+    } else {
+      console.error(err);
+      process.exitCode = 1;
+    }
+  },
+);
