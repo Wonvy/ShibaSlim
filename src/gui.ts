@@ -9,12 +9,16 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
-import { describeSettings } from './format.js';
 import { EXT_RE } from './inputs.js';
+import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
+import { SlimError } from './opc.js';
 import { optimizeFile, type OptimizeReport } from './optimize.js';
 
+/** A fixed port keeps the page's address stable, so its saved settings survive restarts. */
+export const DEFAULT_PORT = 51735;
+
 export interface GuiOptions {
-  /** 0 picks a free port. */
+  /** 0 picks a free port. Without it, DEFAULT_PORT is tried first, then any free port. */
   port?: number;
   /** Where results go unless the page asks for somewhere else. */
   defaultOutDir?: string;
@@ -43,7 +47,14 @@ interface Entry {
   progress: number;
   result?: { before: number; after: number; changed: boolean; optimized: number; images: number; clarity: number; outDir: string };
   output?: string;
-  error?: string;
+  error?: ErrorInfo;
+}
+
+/** An error as the page receives it: a message key to translate, plus the Chinese text as a fallback. */
+interface ErrorInfo {
+  code: MessageKey;
+  params: Params;
+  message: string;
 }
 
 interface Job {
@@ -55,10 +66,17 @@ interface Job {
 class HttpError extends Error {
   constructor(
     readonly status: number,
-    message: string,
+    readonly code: MessageKey,
+    readonly params: Params = {},
   ) {
-    super(message);
+    super(t('zh', code, params));
   }
+}
+
+function errorInfo(err: unknown): ErrorInfo {
+  if (err instanceof HttpError || err instanceof SlimError) return { code: err.code, params: err.params, message: err.message };
+  const detail = err instanceof Error ? err.message : String(err);
+  return { code: 'error.unexpected', params: { detail }, message: detail };
 }
 
 const PAGE_DIR = fileURLToPath(new URL('../gui/', import.meta.url));
@@ -67,6 +85,8 @@ const STATIC: Record<string, { file: string; type: string }> = {
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' },
   '/style.css': { file: 'style.css', type: 'text/css; charset=utf-8' },
 };
+/** Served as /i18n.js: the shared theme and language runtime with the page's messages. */
+const I18N_SCRIPT = runtimeScript(['gui.', 'error.', 'note.', 'prefs.']);
 const PAGE_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const MAX_JSON = 64 * 1024;
@@ -96,7 +116,8 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   let running = false;
   let port = 0;
 
-  const clarityDetails = Array.from({ length: 101 }, (_, c) => (c === 0 ? '' : describeSettings(settingsForClarity(c))));
+  // Index = clarity; the page formats these in its own language.
+  const claritySettings = Array.from({ length: 101 }, (_, c) => (c === 0 ? null : settingsForClarity(c)));
 
   const view = (e: Entry) => ({
     id: e.id,
@@ -148,7 +169,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
           entry.result = summarize(report, job);
         } catch (err) {
           entry.state = 'error';
-          entry.error = err instanceof Error ? err.message : String(err);
+          entry.error = errorInfo(err);
         }
         update(entry);
       }
@@ -160,7 +181,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   /** Picks the output file for an entry without ever replacing a file this session did not write. */
   async function claimOutput(entry: Entry, outDir: string): Promise<string> {
     const desired = path.join(outDir, ...entry.rel.split('/'));
-    if (!isInsideOrEqual(outDir, desired)) throw new HttpError(400, '文件路径不合法');
+    if (!isInsideOrEqual(outDir, desired)) throw new HttpError(400, 'error.badPath');
     const { dir, name, ext } = path.parse(desired);
     for (let i = 1; ; i++) {
       const candidate = i === 1 ? desired : path.join(dir, `${name} (${i})${ext}`);
@@ -196,7 +217,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   async function removeEntry(id: string): Promise<void> {
     const entry = entries.get(id);
     if (!entry) return;
-    if (entry.state === 'running') throw new HttpError(409, '正在压缩的文件不能移除');
+    if (entry.state === 'running') throw new HttpError(409, 'error.removeRunning');
     entries.delete(id);
     for (const key of previews.keys()) if (key.startsWith(`${id}:`)) previews.delete(key);
     await rm(entry.source, { force: true });
@@ -206,10 +227,20 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // A DNS-rebinding page would arrive with its own host name here.
     const host = req.headers.host ?? '';
-    if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) throw new HttpError(403, '拒绝访问');
+    if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) throw new HttpError(403, 'error.forbidden');
 
     const url = new URL(req.url ?? '/', `http://${host}`);
     const route = url.pathname;
+
+    if (route === '/i18n.js' && req.method === 'GET') {
+      res.writeHead(200, {
+        'Content-Type': 'text/javascript; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(I18N_SCRIPT);
+      return;
+    }
 
     const asset = STATIC[route];
     if (asset && req.method === 'GET') {
@@ -225,22 +256,22 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       return;
     }
 
-    if (!route.startsWith('/api/')) throw new HttpError(404, '页面不存在');
+    if (!route.startsWith('/api/')) throw new HttpError(404, 'error.pageNotFound');
     // The page sends the token as a header; links opened in new tabs (preview, download, events) use ?t=.
     const given = req.headers['x-shiba-token'] ?? url.searchParams.get('t');
-    if (given !== token) throw new HttpError(401, '访问口令无效，请使用终端里显示的完整地址重新打开');
+    if (given !== token) throw new HttpError(401, 'error.badToken');
 
     const segments = route.slice('/api/'.length).split('/');
     const [resource, id] = segments;
     const method = req.method ?? 'GET';
     const entryOr404 = () => {
       const entry = id ? entries.get(id) : undefined;
-      if (!entry) throw new HttpError(404, '文件不在列表里');
+      if (!entry) throw new HttpError(404, 'error.notInList');
       return entry;
     };
 
     if (resource === 'state' && method === 'GET') {
-      return json(res, { files: [...entries.values()].map(view), clarityDetails, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform });
+      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform });
     }
 
     if (resource === 'events' && method === 'GET') {
@@ -258,7 +289,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     if (resource === 'upload' && method === 'POST') {
       const name = sanitizeName(url.searchParams.get('name') ?? '');
       const rel = sanitizeRel(url.searchParams.get('rel') ?? name, name);
-      if (!EXT_RE.test(name)) throw new HttpError(415, `不支持的文件类型：${name}`);
+      if (!EXT_RE.test(name)) throw new HttpError(415, 'error.unsupportedType', { name });
       const entryId = randomUUID();
       const source = path.join(tempDir, entryId + path.extname(name).toLowerCase());
       try {
@@ -283,7 +314,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     if (resource === 'compress' && method === 'POST') {
       const body = await readJson(req);
       const clarity = Number(body.clarity);
-      if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, '清晰度需在 1 到 100 之间');
+      if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
       const outDir = validateDir(body.outDir);
       const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string') : [];
       let queued = 0;
@@ -315,7 +346,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     if (resource === 'preview' && method === 'GET') {
       const entry = entryOr404();
       const clarity = Number(url.searchParams.get('c') ?? DEFAULT_CLARITY);
-      if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, '清晰度需在 1 到 100 之间');
+      if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
       const file = await previewFor(entry, clarity);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       await pipeline(createReadStream(file), res);
@@ -324,7 +355,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
 
     if (resource === 'download' && method === 'GET') {
       const entry = entryOr404();
-      if (!entry.output || !existsSync(entry.output)) throw new HttpError(404, '还没有压缩结果');
+      if (!entry.output || !existsSync(entry.output)) throw new HttpError(404, 'error.noResult');
       const filename = path.basename(entry.output);
       const { size } = await stat(entry.output);
       res.writeHead(200, {
@@ -339,7 +370,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
 
     if (resource === 'reveal' && method === 'POST') {
       const entry = entryOr404();
-      if (!entry.output || !existsSync(entry.output)) throw new HttpError(404, '还没有压缩结果');
+      if (!entry.output || !existsSync(entry.output)) throw new HttpError(404, 'error.noResult');
       await reveal(entry.output);
       return json(res, { ok: true });
     }
@@ -352,7 +383,8 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     }
 
     if (resource === 'pick-dir' && method === 'POST') {
-      return json(res, { path: await pickFolder() });
+      const lang: Locale = req.headers['x-shiba-lang'] === 'en' ? 'en' : 'zh';
+      return json(res, { path: await pickFolder(t(lang, 'gui.pickPrompt')) });
     }
 
     if (resource === 'quit' && method === 'POST') {
@@ -361,29 +393,49 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       return;
     }
 
-    throw new HttpError(404, '接口不存在');
+    throw new HttpError(404, 'error.noApi');
   }
 
   const server = createServer((req, res) => {
     handle(req, res).catch((err: unknown) => {
       const status = err instanceof HttpError ? err.status : 500;
-      const message = err instanceof Error ? err.message : String(err);
       if (res.headersSent) {
         res.destroy();
         return;
       }
       // Leave the upload body unread on errors; closing the connection stops the transfer.
       if (req.readableEnded === false) res.setHeader('Connection', 'close');
-      json(res, { error: message }, status);
+      const info = errorInfo(err);
+      json(res, { error: info.message, code: info.code, params: info.params }, status);
     });
   });
   // Large uploads over loopback can take a while; Node's default request timeout would cut them off.
   server.requestTimeout = 0;
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(options.port ?? 0, '127.0.0.1', () => resolve());
-  });
+  const listen = (wanted: number) =>
+    new Promise<void>((resolve, reject) => {
+      const onError = (err: Error) => {
+        server.off('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(wanted, '127.0.0.1');
+    });
+  if (options.port !== undefined) {
+    await listen(options.port);
+  } else {
+    try {
+      await listen(DEFAULT_PORT);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err;
+      await listen(0);
+    }
+  }
   port = (server.address() as AddressInfo).port;
 
   const cleanup = () => rmSync(tempDir, { recursive: true, force: true });
@@ -423,12 +475,12 @@ function json(res: ServerResponse, body: unknown, status = 200): void {
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  if (!(req.headers['content-type'] ?? '').startsWith('application/json')) throw new HttpError(415, '需要 JSON 请求');
+  if (!(req.headers['content-type'] ?? '').startsWith('application/json')) throw new HttpError(415, 'error.needJson');
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req as AsyncIterable<Buffer>) {
     size += chunk.length;
-    if (size > MAX_JSON) throw new HttpError(413, '请求太大');
+    if (size > MAX_JSON) throw new HttpError(413, 'error.tooLarge');
     chunks.push(chunk);
   }
   try {
@@ -437,14 +489,14 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   } catch {
     // fall through
   }
-  throw new HttpError(400, '请求格式不正确');
+  throw new HttpError(400, 'error.badRequest');
 }
 
 function validateDir(value: unknown): string {
-  if (typeof value !== 'string' || value.trim() === '') throw new HttpError(400, '请填写保存位置');
+  if (typeof value !== 'string' || value.trim() === '') throw new HttpError(400, 'error.outDirMissing');
   let dir = value.trim();
   if (dir === '~' || dir.startsWith('~/') || dir.startsWith('~\\')) dir = path.join(os.homedir(), dir.slice(1));
-  if (!path.isAbsolute(dir)) throw new HttpError(400, '保存位置需要是完整路径，例如 ' + defaultOutDir());
+  if (!path.isAbsolute(dir)) throw new HttpError(400, 'error.outDirRelative', { example: defaultOutDir() });
   return path.resolve(dir);
 }
 
@@ -453,7 +505,7 @@ const ILLEGAL = /[<>:"|?*\u0000-\u001f]/g;
 function sanitizeName(raw: string): string {
   const base = raw.split(/[\\/]/).pop() ?? '';
   const clean = base.replace(ILLEGAL, '_').trim();
-  if (!clean || clean === '.' || clean === '..') throw new HttpError(400, '文件名不合法');
+  if (!clean || clean === '.' || clean === '..') throw new HttpError(400, 'error.badName');
   return clean;
 }
 
@@ -496,8 +548,7 @@ async function reveal(file: string): Promise<void> {
   else await run('xdg-open', [path.dirname(file)]);
 }
 
-async function pickFolder(): Promise<string | null> {
-  const prompt = '选择压缩结果的保存位置';
+async function pickFolder(prompt: string): Promise<string | null> {
   if (process.platform === 'darwin') {
     const { code, stdout } = await run('osascript', ['-e', `POSIX path of (choose folder with prompt "${prompt}")`]);
     return code === 0 ? stdout.trim().replace(/\/$/, '') || '/' : null;
@@ -521,5 +572,5 @@ async function pickFolder(): Promise<string | null> {
       // not installed, try the next one
     }
   }
-  throw new HttpError(501, '没有找到可用的文件夹选择窗口（需要 zenity 或 kdialog），请直接输入路径');
+  throw new HttpError(501, 'error.noFolderPicker');
 }

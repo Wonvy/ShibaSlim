@@ -123,15 +123,17 @@ async function runGui(argv: string[]): Promise<number> {
     console.log('用法: shibaslim gui [--port <端口>] [--no-browser]\n\n在本机启动图形界面并用浏览器打开。只监听 127.0.0.1，其他电脑无法访问。');
     return 0;
   }
-  const port = numberOption('port', values.port) ?? 0;
-  if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError('--port 需为 0 到 65535 之间的整数');
+  const port = numberOption('port', values.port);
+  if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) {
+    throw new UsageError('--port 需为 0 到 65535 之间的整数');
+  }
 
   let server: Awaited<ReturnType<typeof startGui>> | undefined;
   const shutdown = async () => {
     await server?.close();
     process.exit(0);
   };
-  server = await startGui({ port, onQuit: () => void shutdown() });
+  server = await startGui({ ...(port !== undefined ? { port } : {}), onQuit: () => void shutdown() });
   process.once('SIGINT', () => void shutdown());
   process.once('SIGTERM', () => void shutdown());
 
@@ -242,7 +244,7 @@ async function main(): Promise<number> {
 
     try {
       if (!inPlace && path.resolve(output) === item.file) {
-        throw new SlimError('输出路径与原文件相同；如需覆盖请使用 --in-place');
+        throw new SlimError('error.samePath');
       }
       const report = await optimizeFile(item.file, output, previewPath ? { ...options, previewPath } : options);
       clearStatus();

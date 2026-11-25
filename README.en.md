@@ -21,15 +21,15 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/gui-dark.png">
-    <img src="docs/gui-light.png" width="820" alt="ShibaSlim interface: drop files in, set clarity, compress in bulk">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/gui-en-dark.png">
+    <img src="docs/gui-en-light.png" width="820" alt="ShibaSlim interface: drop files in, set clarity, compress in bulk">
   </picture>
   <br>
   <sub>The files in the screenshot are generated demo decks; real savings depend on the original images.</sub>
 </p>
 
 > [!NOTE]
-> The interface and command-line messages are currently in Chinese. This guide quotes each button's label in Chinese so you can find it on screen.
+> The interface and the comparison page follow your system language (Chinese or English) and theme. Command-line messages are currently in Chinese only.
 
 ## Features
 
@@ -37,6 +37,7 @@
 - **One clarity setting**: a single number from 1 to 100 sets resolution, JPEG quality and PNG colour reduction together.
 - **Before/after comparison**: picks a few random slides and lets you drag a divider between the original and the compressed version, with up to 4× zoom.
 - **Graphical interface and CLI**: drag files or whole folders into a browser page, or batch-process folders from the command line.
+- **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
 - **Your files are safe**: originals are left alone by default and results are saved as new files; the graphical interface never overwrites an existing file. Every result is re-read and checked before it is written.
 - **Runs locally**: nothing is uploaded to the internet. Works on macOS, Windows and Linux.
 
@@ -64,34 +65,36 @@ Then open the interface either way:
 
 The ShibaSlim page opens in your browser:
 
-1. Drag PowerPoint files or whole folders onto the page, or use 选择文件 (Choose files) / 选择文件夹 (Choose folder). Folders are added with all their sub-folders.
-2. Move the 清晰度 (Clarity) slider, or pick 很小 / 日常 / 高清 (Small / Everyday / High).
-3. To check the result first, click 对比 (Compare) next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
-4. Click 开始压缩 (Start). When a file is done, use 下载 (Download), or 显示 (Show) to find it in its folder.
+1. Drag PowerPoint files or whole folders onto the page, or use **Choose files** / **Choose folder**. Folders are added with all their sub-folders.
+2. Move the **Clarity** slider, or pick **Small**, **Everyday** or **High**.
+3. To check the result first, click **Compare** next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
+4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
+
+The switches at the top right set the theme (System / Light / Dark) and language (System / 中文 / English). Both follow the system by default and change along with it; a choice you make is remembered, and the comparison page uses it too.
 
 Results go to `Downloads/ShibaSlim` by default; you can change this on the page. Files keep their original names, and dropped folders keep their structure. If a file of the same name is already there, the result is saved as `name (2).pptx` instead.
 
 > [!NOTE]
-> The page is served only on `127.0.0.1` and its address carries a one-time access token, so other computers and other websites cannot reach it. Dropped files are copied to the system temp folder and deleted when you quit. Click 退出 (Quit) at the top right when you are done, or simply close the terminal window.
+> The page is served only on `127.0.0.1` and its address carries a one-time access token, so other computers and other websites cannot reach it. Dropped files are copied to the system temp folder and deleted when you quit. Click **Quit** at the top right when you are done, or simply close the terminal window.
 
-`shibaslim gui` takes two options: `--port <port>` to choose the port (a free one is picked by default) and `--no-browser` to print the address without opening a browser.
+`shibaslim gui` takes two options: `--port <port>` to choose the port (51735 by default, or any free port if that one is taken) and `--no-browser` to print the address without opening a browser.
 
 ## Comparison page
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/compare-dark.jpg">
-    <img src="docs/compare-light.jpg" width="820" alt="Comparison page: original on the left, compressed on the right, with a draggable divider">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/compare-en-dark.jpg">
+    <img src="docs/compare-en-light.jpg" width="820" alt="Comparison page: original on the left, compressed on the right, with a draggable divider">
   </picture>
 </p>
 
 The comparison page picks a few random slides whose images changed and draws the images where they sit on each slide. **The original is on the left and the compressed version on the right**; drag anywhere on the slide to move the divider.
 
 - Zoom to 2× or 4×; the view centres on the divider.
-- Click 原图 (Original) at the top left or 压缩后 (Compressed) at the top right to switch the whole slide. Flicking between them is the easiest way to spot a difference.
+- Click **Original** at the top left or **Compressed** at the top right to switch the whole slide. Flicking between them is the easiest way to spot a difference.
 - With the slide focused, <kbd>←</kbd> <kbd>→</kbd> move the divider (hold <kbd>Shift</kbd> for fine steps) and <kbd>Home</kbd> / <kbd>End</kbd> jump to either side.
 - A table under each slide lists every image's size before and after.
-- The page is a single self-contained HTML file with the images embedded, so you can send it to someone.
+- The page is a single self-contained HTML file with the images embedded, so you can send it to someone; it opens in their own system's theme and language.
 
 > [!NOTE]
 > Only images are drawn. Text, shapes and charts are identical before and after, so they are left out and the page looks emptier than the real slide.
@@ -232,6 +235,7 @@ The tests build presentations covering many cases with pptxgenjs on the fly, wit
 | `src/inputs.ts` | Expands files, folders and globs, and works out output paths |
 | `src/cli.ts` | Command line and batch processing |
 | `src/gui.ts` | Local server behind the interface: uploads, queue, progress updates |
+| `src/messages.ts` | Chinese and English text for the pages, plus the theme and language switcher they share |
 | `gui/` | The interface page (HTML, CSS, JS, no build step) |
 
 </details>

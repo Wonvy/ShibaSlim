@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import JSZip from 'jszip';
-import { startGui } from '../dist/gui.js';
+import { DEFAULT_PORT, startGui } from '../dist/gui.js';
 import { buildFixture } from './fixture.mjs';
 
 describe('gui server', () => {
@@ -63,6 +64,22 @@ describe('gui server', () => {
     assert.match(res.headers.get('content-security-policy'), /script-src 'self'/);
   });
 
+  test('serves the theme and language runtime with both languages', async () => {
+    const res = await fetch(base + '/i18n.js');
+    assert.equal(res.status, 200);
+    const script = await res.text();
+    assert.match(script, /window\.ShibaI18n = I/);
+    assert.match(script, /"gui\.start":"开始压缩"/);
+    assert.match(script, /"gui\.start":"Start"/);
+    assert.ok(!script.includes('"preview.'), 'the comparison page messages are not needed here');
+  });
+
+  test('sends clarity settings as numbers so the page can word them in its own language', async () => {
+    const { data } = await call('/api/state');
+    assert.deepEqual(data.claritySettings[60], { ppi: 150, jpegQuality: 80, pngQuality: 90 });
+    assert.equal(data.claritySettings[0], null);
+  });
+
   test('refuses API calls without the token', async () => {
     assert.equal((await call('/api/state', { token: null })).status, 401);
     assert.equal((await call('/api/state', { token: 'wrong' })).status, 401);
@@ -87,6 +104,8 @@ describe('gui server', () => {
     const { status, data } = await upload('notes.docx', undefined, Buffer.from('x'));
     assert.equal(status, 415);
     assert.match(data.error, /不支持/);
+    assert.equal(data.code, 'error.unsupportedType');
+    assert.deepEqual(data.params, { name: 'notes.docx' });
   });
 
   test('compresses an upload into the output folder, keeping its folder but never escaping it', async () => {
@@ -133,7 +152,8 @@ describe('gui server', () => {
     await call('/api/compress', { method: 'POST', body: { ids: [broken.id, good.id], clarity: 60, outDir } });
     const failed = await waitFor(broken.id);
     assert.equal(failed.state, 'error');
-    assert.match(failed.error, /不是有效的 pptx/);
+    assert.equal(failed.error.code, 'error.notZip');
+    assert.match(failed.error.message, /不是有效的 pptx/);
     assert.equal((await waitFor(good.id)).state, 'done');
   });
 
@@ -184,6 +204,33 @@ describe('gui server', () => {
     await call('/api/quit', { method: 'POST' });
     await new Promise((r) => setTimeout(r, 100));
     assert.equal(quitCalls, 1);
+  });
+});
+
+describe('gui server port', () => {
+  test('prefers a fixed port so saved page settings survive restarts, and falls back when it is taken', async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
+    // Someone may already be running ShibaSlim on the default port; only then may the first server skip it.
+    const defaultFree = await new Promise((resolve) => {
+      const probe = net.createServer();
+      probe.once('error', () => resolve(false));
+      probe.listen(DEFAULT_PORT, '127.0.0.1', () => probe.close(() => resolve(true)));
+    });
+    const first = await startGui({ defaultOutDir: outDir });
+    const second = await startGui({ defaultOutDir: outDir });
+    try {
+      if (defaultFree) assert.equal(first.port, DEFAULT_PORT);
+      assert.notEqual(second.port, DEFAULT_PORT);
+      assert.notEqual(first.port, second.port);
+      for (const s of [first, second]) {
+        const res = await fetch(`http://127.0.0.1:${s.port}/api/state`, { headers: { 'X-Shiba-Token': s.token } });
+        assert.equal(res.status, 200);
+      }
+    } finally {
+      await first.close();
+      await second.close();
+      await rm(outDir, { recursive: true, force: true });
+    }
   });
 });
 

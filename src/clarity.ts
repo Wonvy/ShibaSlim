@@ -24,7 +24,7 @@ const CLARITY_CURVE: readonly (readonly [clarity: number, ppi: number, jpeg: num
 const LOSSLESS_PNG_FROM = 85;
 
 export function settingsForClarity(clarity: number): Preset {
-  if (!(clarity >= 1 && clarity <= 100)) throw new SlimError('清晰度需在 1 到 100 之间');
+  if (!(clarity >= 1 && clarity <= 100)) throw new SlimError('error.clarityRange');
   let upper = CLARITY_CURVE.findIndex((point) => point[0] >= clarity);
   if (upper <= 0) upper = 1;
   const low = CLARITY_CURVE[upper - 1]!;

@@ -1,9 +1,20 @@
 import JSZip from 'jszip';
 import { posix } from 'node:path';
+import { t, type MessageKey, type Params } from './messages.js';
 import { attr, decodeXml, escapeAttr, parseXml } from './xml.js';
 
-/** An error whose message is meant to be shown to the user as-is. */
-export class SlimError extends Error {}
+/**
+ * An error meant for the user. `message` is the Chinese text (what the command
+ * line prints); pages translate `code` with `params` into their own language.
+ */
+export class SlimError extends Error {
+  constructor(
+    readonly code: MessageKey,
+    readonly params: Params = {},
+  ) {
+    super(t('zh', code, params));
+  }
+}
 
 const CONTENT_TYPES = '[Content_Types].xml';
 const RELS_RE = /^(?:(.*)\/)?_rels\/([^/]*)\.rels$/i;
@@ -63,23 +74,23 @@ export class OpcPackage {
 
   static async load(data: Buffer): Promise<OpcPackage> {
     if (data.length >= 4 && data.readUInt32BE(0) === 0xd0cf11e0) {
-      throw new SlimError('文件已加密，或是旧版 .ppt 格式，无法处理');
+      throw new SlimError('error.encrypted');
     }
     let zip: JSZip;
     try {
       zip = await JSZip.loadAsync(data);
     } catch {
-      throw new SlimError('不是有效的 pptx 文件（无法作为 zip 打开）');
+      throw new SlimError('error.notZip');
     }
     const pkg = new OpcPackage(zip);
     for (const name of pkg.names()) pkg.index.set(name.toLowerCase(), name);
-    if (!pkg.has(CONTENT_TYPES)) throw new SlimError('不是有效的 pptx 文件（缺少 [Content_Types].xml）');
+    if (!pkg.has(CONTENT_TYPES)) throw new SlimError('error.noContentTypes');
     try {
       await pkg.loadContentTypes();
       await pkg.loadRels();
     } catch (err) {
       if (err instanceof SlimError) throw err;
-      throw new SlimError(`文件结构损坏：${err instanceof Error ? err.message : String(err)}`);
+      throw new SlimError('error.corrupt', { detail: err instanceof Error ? err.message : String(err) });
     }
     return pkg;
   }
@@ -94,7 +105,7 @@ export class OpcPackage {
 
   async read(name: string): Promise<Buffer> {
     const entry = this.zip.file(name);
-    if (!entry) throw new SlimError(`包内缺少部件 ${name}`);
+    if (!entry) throw new SlimError('error.missingPart', { name });
     return entry.async('nodebuffer');
   }
 

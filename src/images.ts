@@ -1,5 +1,12 @@
 import sharp from 'sharp';
+import type { MessageKey, Params } from './messages.js';
 import type { ImageNeed } from './usage.js';
+
+/** Why an image was left alone, as a message key so each page can show it in its own language. */
+export interface Reason {
+  code: MessageKey;
+  params?: Params;
+}
 
 export interface ImageSettings {
   jpegQuality: number;
@@ -11,7 +18,7 @@ export interface ImageSettings {
 
 export interface ImageOutcome {
   status: 'optimized' | 'kept' | 'skipped';
-  note?: string;
+  reason?: Reason;
   data?: Buffer;
   format?: 'jpeg' | 'png';
   width: number;
@@ -46,13 +53,13 @@ export async function optimizeImage(
   const height = meta.height ?? 0;
   const unchanged = { width, height, newWidth: width, newHeight: height };
 
-  if (need?.noTouch) return { status: 'skipped', note: '使用了“设置透明色”，需保持像素不变', ...unchanged };
-  if (data.length < MIN_BYTES) return { status: 'kept', note: '文件很小', ...unchanged };
-  if (!width || !height) return { status: 'skipped', note: '无法读取尺寸', ...unchanged };
+  if (need?.noTouch) return { status: 'skipped', reason: { code: 'note.colorKey' }, ...unchanged };
+  if (data.length < MIN_BYTES) return { status: 'kept', reason: { code: 'note.tiny' }, ...unchanged };
+  if (!width || !height) return { status: 'skipped', reason: { code: 'note.noSize' }, ...unchanged };
   if (meta.format !== 'jpeg' && meta.format !== 'png' && meta.format !== 'tiff') {
-    return { status: 'skipped', note: `不处理 ${meta.format ?? '未知'} 格式`, ...unchanged };
+    return { status: 'skipped', reason: { code: 'note.format', params: { format: meta.format ?? '?' } }, ...unchanged };
   }
-  if ((meta.pages ?? 1) > 1) return { status: 'skipped', note: '多帧图片', ...unchanged };
+  if ((meta.pages ?? 1) > 1) return { status: 'skipped', reason: { code: 'note.multiFrame' }, ...unchanged };
 
   const orientation = meta.orientation ?? 1;
   let scale = 1;
@@ -92,7 +99,7 @@ export async function optimizeImage(
   }
 
   if (best.data.length > data.length * (1 - MIN_SAVING)) {
-    return { status: 'kept', note: '已足够小', ...unchanged };
+    return { status: 'kept', reason: { code: 'note.smallEnough' }, ...unchanged };
   }
   return { status: 'optimized', data: best.data, format: best.format, width, height, newWidth, newHeight };
 }

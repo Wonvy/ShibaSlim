@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import sharp from 'sharp';
-import { describeSettings, formatBytes, percentSaved } from './format.js';
+import { formatBytes, percentSaved } from './format.js';
+import { runtimeScript, t, type MessageKey, type Params } from './messages.js';
 import { OpcPackage, type Relationship } from './opc.js';
 import type { ImageReport, OptimizeReport, Settings } from './optimize.js';
 import { insets } from './usage.js';
@@ -147,96 +148,141 @@ export async function buildPreview(input: PreviewInput): Promise<string> {
       const beforeName = posix.basename(row.beforePart);
       const afterName = row.afterPart ? posix.basename(row.afterPart) : '';
       const name = afterName && afterName !== beforeName ? `${beforeName} → ${afterName}` : beforeName;
-      const note = describeChange(row.before, row.after, entry) + (row.drawn ? '' : '；位置未知，画面中未绘制');
       return (
         `<tr><td class="name">${esc(name)}</td>` +
         `<td class="num">${dims(row.before)}</td><td class="num">${row.after ? dims(row.after) : '—'}</td>` +
         `<td class="num">${formatBytes(row.before.bytes)}</td><td class="num">${row.after ? formatBytes(row.after.bytes) : '—'}</td>` +
-        `<td class="note">${esc(note)}</td></tr>`
+        `<td class="note">${changeNote(row.before, row.after, entry, row.drawn)}</td></tr>`
       );
     });
     const pageBefore = sum(uniqueBefore.values());
     const pageAfter = sum(uniqueAfter.values());
+    const pageSaving = pageBefore > 0 ? `${text('preview.note.sep')}<b class="good">−${percentSaved(pageBefore, pageAfter)}</b>` : '';
 
     sections.push(`
-<section class="slide">
+<section class="slide" data-slide="${view.index}">
   <div class="slide-head">
-    <h2>第 ${view.index} 页</h2>
-    <span class="muted">本页图片 ${formatBytes(pageBefore)} → ${formatBytes(pageAfter)}${pageBefore > 0 ? `，<b class="good">−${percentSaved(pageBefore, pageAfter)}</b>` : ''}</span>
+    ${text('preview.slide', { n: view.index }, 'h2')}
+    <span class="muted">${text('preview.slideBytes', { before: formatBytes(pageBefore), after: formatBytes(pageAfter) })}${pageSaving}</span>
   </div>
   <div class="stage">
     <div class="viewport">
-      <div class="compare" style="aspect-ratio:${slide.cx} / ${slide.cy}" tabindex="0" role="slider" aria-label="第 ${view.index} 页对比分界线" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+      <div class="compare" style="aspect-ratio:${slide.cx} / ${slide.cy}" tabindex="0" role="slider" ${ariaAttr('preview.dividerLabel', { n: view.index })} aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
         <div class="layer">${beforeLayer.join('')}</div>
         <div class="layer after">${afterLayer.join('')}</div>
         <div class="divider"><span class="grip"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 6l-5 6 5 6M15 6l5 6-5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
       </div>
     </div>
-    <button type="button" class="tag tag-before" data-show="before" title="整页显示原图，再点一次回到中间">原图</button>
-    <button type="button" class="tag tag-after" data-show="after" title="整页显示压缩后，再点一次回到中间">压缩后</button>
+    <button type="button" class="tag tag-before" data-show="before" data-t="preview.original" data-t-title="preview.showOriginal" title="${esc(t('zh', 'preview.showOriginal'))}">${esc(t('zh', 'preview.original'))}</button>
+    <button type="button" class="tag tag-after" data-show="after" data-t="preview.compressed" data-t-title="preview.showCompressed" title="${esc(t('zh', 'preview.showCompressed'))}">${esc(t('zh', 'preview.compressed'))}</button>
   </div>
   <div class="table-wrap"><table>
-    <thead><tr><th>图片</th><th>原尺寸</th><th>压缩后</th><th>原大小</th><th>压缩后</th><th>说明</th></tr></thead>
+    <thead><tr>${(['preview.col.image', 'preview.col.dimsBefore', 'preview.col.dimsAfter', 'preview.col.bytesBefore', 'preview.col.bytesAfter', 'preview.col.note'] as const).map((k) => text(k, undefined, 'th')).join('')}</tr></thead>
     <tbody>${tableRows.join('')}</tbody>
   </table></div>
 </section>`);
   }
 
   const { report, settings } = input;
-  const summary =
-    picked.length === 0
-      ? '<p class="empty">这个文件里没有找到图片。</p>'
-      : sections.join('');
-  const poolNote = changedViews.length > 0 ? `${pool.length} 页的图片有变化` : `${pool.length} 页有图片，但都没有变化`;
+  const content = picked.length === 0 ? text('preview.empty', undefined, 'p', 'empty') : sections.join('');
+  const footerKey = changedViews.length > 0 ? 'preview.footer.changed' : 'preview.footer.unchanged';
   const images = JSON.stringify(Object.fromEntries(store.uris)).replace(/</g, '\\u003c');
+  const title = JSON.stringify(input.title).replace(/</g, '\\u003c');
+  const settingsKey = settings.pngQuality > 0 ? 'preview.settings.palette' : 'preview.settings.lossless';
 
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>压缩对比 · ${esc(input.title)}</title>
+<meta name="color-scheme" content="light dark">
+<title>${esc(t('zh', 'preview.docTitle', { name: input.title }))}</title>
+<script>${runtimeScript(['preview.', 'note.', 'prefs.'])}</script>
 <style>${STYLE}</style>
 </head>
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="eyebrow">ShibaSlim 压缩对比</div>
+    <div class="top-row">
+      ${text('preview.eyebrow', undefined, 'div', 'eyebrow')}
+      ${PREFS}
+    </div>
     <h1>${esc(input.title)}</h1>
     <div class="figures">
       <div class="figure">
-        <span class="label">整个文件</span>
+        ${text('preview.wholeFile', undefined, 'span', 'label')}
         <span class="value">${formatBytes(report.before)} → ${formatBytes(report.after)}</span>
-        <span class="good">${report.changed ? `−${percentSaved(report.before, report.after)}` : '没有可压缩的空间'}</span>
+        ${report.changed ? `<span class="good">−${percentSaved(report.before, report.after)}</span>` : text('preview.nothingSaved', undefined, 'span', 'good')}
       </div>
       <div class="figure">
-        <span class="label">清晰度</span>
+        ${text('preview.clarity', undefined, 'span', 'label')}
         <span class="value">${settings.clarity}</span>
-        <span class="muted">${esc(describeSettings(settings))}</span>
+        ${text(settingsKey, { ppi: settings.ppi, jpeg: settings.jpegQuality, png: settings.pngQuality }, 'span', 'muted')}
       </div>
     </div>
   </header>
   <div class="toolbar">
-    <span class="hint">拖动画面移动分界线：<b>左边原图</b>，<b>右边压缩后</b>。点角标可整页切换。</span>
-    <div class="seg" role="group" aria-label="缩放">
-      <button type="button" data-zoom="1" aria-pressed="true">适合窗口</button>
-      <button type="button" data-zoom="2" aria-pressed="false">放大 2×</button>
-      <button type="button" data-zoom="4" aria-pressed="false">放大 4×</button>
+    <span class="hint" data-t="preview.hint" data-rich>${richZh('preview.hint')}</span>
+    <div class="seg" role="group" ${ariaAttr('preview.zoom')}>
+      <button type="button" data-zoom="1" aria-pressed="true" data-t="preview.fit">${esc(t('zh', 'preview.fit'))}</button>
+      <button type="button" data-zoom="2" aria-pressed="false" data-t="preview.zoom2">${esc(t('zh', 'preview.zoom2'))}</button>
+      <button type="button" data-zoom="4" aria-pressed="false" data-t="preview.zoom4">${esc(t('zh', 'preview.zoom4'))}</button>
     </div>
   </div>
-  ${summary}
+  ${content}
   <footer>
-    随机抽取了 ${picked.length} 页（共 ${poolNote}），重新生成可以换一批。
-    只绘制图片：文字、形状和图表在压缩前后完全一样，这里不显示。
+    ${text(footerKey, { picked: picked.length, pool: pool.length }, 'p')}
+    ${text('preview.footer.note', undefined, 'p')}
   </footer>
 </div>
 <script>
 const IMAGES = ${images};
+const TITLE = ${title};
 ${SCRIPT}
 </script>
 </body>
 </html>
 `;
+}
+
+/** Theme and language switches, wired up by the shared runtime. */
+const PREFS = `<div class="prefs">
+  <label class="pref">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3a7 7 0 100 14V3z" fill="currentColor"/><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+    <select id="theme" data-t-aria="prefs.theme" data-t-title="prefs.theme" aria-label="主题">
+      <option value="system" data-t="prefs.theme.system">跟随系统</option>
+      <option value="light" data-t="prefs.theme.light">浅色</option>
+      <option value="dark" data-t="prefs.theme.dark">深色</option>
+    </select>
+  </label>
+  <label class="pref">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 10h14M10 3c2.2 2 2.2 12 0 14M10 3c-2.2 2-2.2 12 0 14" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+    <select id="lang" data-t-aria="prefs.lang" data-t-title="prefs.lang" aria-label="语言">
+      <option value="system" data-t="prefs.lang.system">跟随系统</option>
+      <option value="zh">中文</option>
+      <option value="en">English</option>
+    </select>
+  </label>
+</div>`;
+
+/**
+ * An element whose text the page translates on load (and on every language
+ * change). The Chinese text is written in up front so the file reads sensibly
+ * even before the script runs.
+ */
+function text(key: MessageKey, params?: Params, tag = 'span', className?: string): string {
+  const cls = className ? ` class="${className}"` : '';
+  const data = params ? ` data-p="${esc(JSON.stringify(params))}"` : '';
+  return `<${tag}${cls} data-t="${key}"${data}>${esc(t('zh', key, params))}</${tag}>`;
+}
+
+function ariaAttr(key: MessageKey, params?: Params): string {
+  const data = params ? ` data-p="${esc(JSON.stringify(params))}"` : '';
+  return `data-t-aria="${key}"${data} aria-label="${esc(t('zh', key, params))}"`;
+}
+
+function richZh(key: MessageKey): string {
+  return esc(t('zh', key)).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
 }
 
 class PackageReader {
@@ -483,8 +529,10 @@ function picture(p: Placement, box: Box, image: ImageInfo | null, slide: Box): s
     style += `;transform:rotate(${+p.rot.toFixed(3)}deg) scale(${p.flipH ? -1 : 1},${p.flipV ? -1 : 1})`;
   }
   if (!image?.id) {
-    const label = image?.format ? `${FORMAT_NAME[image.format] ?? image.format.toUpperCase()}（浏览器无法显示）` : '无法预览';
-    return `<div class="pic missing" style="${style}"><span>${esc(label)}</span></div>`;
+    const label = image?.format
+      ? text('preview.cannotShow', { format: FORMAT_NAME[image.format] ?? image.format.toUpperCase() })
+      : text('preview.noPreview');
+    return `<div class="pic missing" style="${style}">${label}</div>`;
   }
   // The visible part of a cropped picture fills the box, so the whole bitmap is scaled up and shifted.
   const visibleW = Math.max(0.001, 1 - p.crop.l - p.crop.r);
@@ -493,19 +541,28 @@ function picture(p: Placement, box: Box, image: ImageInfo | null, slide: Box): s
   return `<div class="pic" style="${style}"><img data-src="${image.id}" alt="" style="${imgStyle}"></div>`;
 }
 
-function describeChange(before: ImageInfo, after: ImageInfo | null, entry: ImageReport | undefined): string {
-  if (!after) return '压缩后缺失';
-  if (before.hash === after.hash) return entry?.note ? `未改动（${entry.note}）` : '未改动';
-  const parts: string[] = [];
-  if (before.width && after.width && (before.width !== after.width || before.height !== after.height)) {
-    parts.push('缩小');
-  }
-  if (before.format && after.format && before.format !== after.format) {
-    parts.push(`${FORMAT_NAME[before.format] ?? before.format} 转 ${FORMAT_NAME[after.format] ?? after.format}`);
+/** What happened to one image, as translatable fragments. */
+function changeNote(before: ImageInfo, after: ImageInfo | null, entry: ImageReport | undefined, drawn: boolean): string {
+  let note: string;
+  if (!after) {
+    note = text('preview.note.missing');
+  } else if (before.hash === after.hash) {
+    note = entry?.reason
+      ? text('preview.note.unchangedBecause', { reason: { t: entry.reason.code, ...(entry.reason.params ? { p: entry.reason.params } : {}) } })
+      : text('preview.note.unchanged');
   } else {
-    parts.push('重新编码');
+    const parts: string[] = [];
+    if (before.width && after.width && (before.width !== after.width || before.height !== after.height)) {
+      parts.push(text('preview.note.downscaled'));
+    }
+    if (before.format && after.format && before.format !== after.format) {
+      parts.push(text('preview.note.converted', { from: FORMAT_NAME[before.format] ?? before.format, to: FORMAT_NAME[after.format] ?? after.format }));
+    } else {
+      parts.push(text('preview.note.reencoded'));
+    }
+    note = parts.join(text('preview.note.sep'));
   }
-  return parts.join('，');
+  return drawn ? note : note + text('preview.note.notDrawn');
 }
 
 function dims(info: ImageInfo): string {
@@ -550,12 +607,19 @@ function esc(text: string): string {
 
 const STYLE = `
 :root{color-scheme:light;--bg:#f5f5f3;--panel:#fff;--text:#1d1d1f;--muted:#6b6b70;--line:#e2e2de;--good:#2b8a3e;--chip:rgba(20,20,20,.62);--focus:#1c7ed6}
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151515;--panel:#1f1f1f;--text:#ececec;--muted:#9b9b9b;--line:#323232;--good:#69db7c;--focus:#4dabf7}}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;--bg:#151515;--panel:#1f1f1f;--text:#ececec;--muted:#9b9b9b;--line:#323232;--good:#69db7c;--focus:#4dabf7}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#151515;--panel:#1f1f1f;--text:#ececec;--muted:#9b9b9b;--line:#323232;--good:#69db7c;--focus:#4dabf7}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif}
 .wrap{max-width:1240px;margin:0 auto;padding:28px 16px 64px}
+.top-row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 16px}
 .eyebrow{color:var(--muted);font-size:12px;letter-spacing:.04em}
+.prefs{display:flex;gap:6px}
+.pref{position:relative;display:inline-flex;align-items:center;color:var(--muted)}
+.pref svg{position:absolute;left:9px;width:14px;height:14px;pointer-events:none}
+.pref select{appearance:none;-webkit-appearance:none;height:30px;padding:0 26px 0 28px;border:1px solid var(--line);border-radius:999px;background:var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center;color:var(--text);font:inherit;font-size:12.5px;cursor:pointer}
+.pref select:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 h1{font-size:22px;line-height:1.3;margin:2px 0 16px;word-break:break-all}
 .figures{display:flex;flex-wrap:wrap;gap:12px}
 .figure{display:flex;flex-direction:column;gap:2px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:200px}
@@ -574,6 +638,7 @@ button:focus-visible,.compare:focus-visible{outline:2px solid var(--focus);outli
 .slide{margin-top:32px}
 .slide-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin-bottom:10px}
 .slide-head h2{font-size:16px;margin:0}
+footer p{margin:0 0 4px}
 .stage{position:relative;border-radius:8px;overflow:hidden;box-shadow:0 0 0 1px var(--line),0 2px 8px rgba(0,0,0,.08)}
 .viewport{overflow:auto;max-height:85vh;background:#fff}
 .compare{--pos:50%;position:relative;width:calc(100% * var(--zoom,1));background:#fff;cursor:ew-resize;touch-action:pan-y;user-select:none;-webkit-user-select:none}
@@ -594,11 +659,21 @@ th{color:var(--muted);font-weight:500;white-space:nowrap}
 td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 td.name{min-width:140px;word-break:break-all}
 td.note{color:var(--muted);min-width:160px}
+td.note::first-letter{text-transform:uppercase}
 .empty{margin-top:32px;color:var(--muted)}
 footer{margin-top:40px;color:var(--muted);font-size:13px}
 `;
 
 const SCRIPT = `
+const I18N = window.ShibaI18n;
+function relabel() {
+  I18N.apply(document);
+  document.title = I18N.t('preview.docTitle', { name: TITLE });
+}
+I18N.bindSelects(document.getElementById('theme'), document.getElementById('lang'));
+I18N.onLangChange(relabel);
+relabel();
+
 for (const img of document.querySelectorAll('img[data-src]')) img.src = IMAGES[img.dataset.src];
 
 function setPos(compare, value) {

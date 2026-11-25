@@ -1,5 +1,8 @@
 'use strict';
 
+const I18N = window.ShibaI18n;
+const t = (key, params) => I18N.t(key, params);
+
 const token = new URLSearchParams(location.search).get('t') || location.hash.slice(1);
 const EXT = /\.(pptx|pptm|ppsx|ppsm|potx|potm)$/i;
 const STORE_KEY = 'shibaslim:settings';
@@ -7,6 +10,8 @@ const UPLOAD_CONCURRENCY = 2;
 
 const el = {
   banner: document.getElementById('banner'),
+  theme: document.getElementById('theme'),
+  lang: document.getElementById('lang'),
   clarity: document.getElementById('clarity'),
   clarityValue: document.getElementById('clarity-value'),
   clarityDetail: document.getElementById('clarity-detail'),
@@ -32,11 +37,14 @@ const state = {
   files: new Map(),
   /** Settings each file was last sent with, to tell when a finished file is out of date. */
   sentWith: new Map(),
-  clarityDetails: [],
+  /** Index = clarity; { ppi, jpegQuality, pngQuality } from the server. */
+  claritySettings: [],
   clarity: 60,
   outDir: '',
   defaultOutDir: '',
   stopped: false,
+  /** The banner as a message key, so it can be shown again in another language. */
+  banner: null,
 };
 let uploadSeq = 0;
 
@@ -53,17 +61,34 @@ function percentSaved(before, after) {
   return before > 0 ? `${Math.floor((1 - after / before) * 100)}%` : '0%';
 }
 
+/** An error carrying a message key, so it is shown in the page's language. */
+class PageError extends Error {
+  constructor(code, params, fallback) {
+    super(fallback || code);
+    this.code = code;
+    this.params = params || {};
+  }
+}
+
+function errorText(err) {
+  if (err && err.code) return t(err.code, err.params);
+  return (err && err.message) || String(err);
+}
+
 async function api(path, { method = 'GET', body } = {}) {
-  const headers = { 'X-Shiba-Token': token };
+  const headers = { 'X-Shiba-Token': token, 'X-Shiba-Lang': I18N.lang() };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let res;
   try {
     res = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   } catch {
-    throw new Error('无法连接 ShibaSlim，本地服务可能已经退出');
+    throw new PageError('gui.api.offline');
   }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`);
+  if (!res.ok) {
+    if (data.code) throw new PageError(data.code, data.params, data.error);
+    throw new PageError('gui.api.failed', { status: res.status });
+  }
   return data;
 }
 
@@ -75,9 +100,23 @@ function toast(message) {
   toastTimer = setTimeout(() => el.toast.classList.remove('show'), 3200);
 }
 
-function showBanner(message) {
-  el.banner.textContent = message;
+function showBanner(key, params) {
+  state.banner = { key, params };
+  renderBanner();
+}
+
+function renderBanner() {
+  if (!state.banner) {
+    el.banner.hidden = true;
+    return;
+  }
+  el.banner.textContent = t(state.banner.key, state.banner.params);
   el.banner.hidden = false;
+}
+
+function hideBanner() {
+  state.banner = null;
+  renderBanner();
 }
 
 function loadSettings() {
@@ -106,18 +145,26 @@ async function pool(items, limit, fn) {
 
 // ---------- settings ----------
 
-function clarityLabel(c) {
-  if (c <= 35) return '体积最小，适合邮件附件';
-  if (c <= 70) return '日常投影和屏幕查看';
-  if (c < 95) return '高清，PNG 保持无损';
-  return '几乎不缩小，只做无感的重新编码';
+function clarityLabelKey(c) {
+  if (c <= 35) return 'gui.clarity.small';
+  if (c <= 70) return 'gui.clarity.everyday';
+  if (c < 95) return 'gui.clarity.high';
+  return 'gui.clarity.max';
 }
 
 function renderSettings() {
   el.clarity.value = String(state.clarity);
   el.clarity.style.setProperty('--fill', `${((state.clarity - 1) / 99) * 100}%`);
   el.clarityValue.textContent = String(state.clarity);
-  el.clarityDetail.textContent = `${state.clarityDetails[state.clarity] || ''} — ${clarityLabel(state.clarity)}`;
+  const s = state.claritySettings[state.clarity];
+  el.clarityDetail.textContent = s
+    ? t(s.pngQuality > 0 ? 'gui.settings.palette' : 'gui.settings.lossless', {
+        ppi: s.ppi,
+        jpeg: s.jpegQuality,
+        png: s.pngQuality,
+        label: { t: clarityLabelKey(state.clarity) },
+      })
+    : '';
   for (const button of el.presets) {
     button.setAttribute('aria-pressed', String(Number(button.dataset.clarity) === state.clarity));
   }
@@ -168,11 +215,12 @@ function createRow(file) {
     </div>
     <div class="saved"></div>
     <div class="row-actions">
-      <button type="button" data-act="preview" title="按当前清晰度生成对比页面，不保存文件">对比</button>
-      <button type="button" data-act="download" title="下载压缩后的文件">下载</button>
-      <button type="button" data-act="reveal" title="在文件夹中显示">显示</button>
-      <button type="button" data-act="remove" title="从列表移除" aria-label="从列表移除">×</button>
+      <button type="button" data-act="preview" data-t="gui.row.preview" data-t-title="gui.row.previewTitle"></button>
+      <button type="button" data-act="download" data-t="gui.row.download" data-t-title="gui.row.downloadTitle"></button>
+      <button type="button" data-act="reveal" data-t="gui.row.reveal" data-t-title="gui.row.revealTitle"></button>
+      <button type="button" data-act="remove" data-t-title="gui.row.remove" data-t-aria="gui.row.remove">×</button>
     </div>`;
+  I18N.apply(li);
   return li;
 }
 
@@ -180,21 +228,29 @@ function metaText(file) {
   const size = formatBytes(file.size);
   switch (file.state) {
     case 'uploading':
-      return `上传中 ${Math.round(file.progress * 100)}% · ${size}`;
+      return t('gui.meta.uploading', { pct: Math.round(file.progress * 100), size });
     case 'queued':
-      return `${size} · 排队中`;
+      return t('gui.meta.queued', { size });
     case 'running':
-      return file.progress >= 0.9 ? `${size} · 正在打包…` : `${size} · 压缩中 ${Math.round((file.progress / 0.9) * 100)}%`;
+      return file.progress >= 0.9
+        ? t('gui.meta.packing', { size })
+        : t('gui.meta.running', { size, pct: Math.round((file.progress / 0.9) * 100) });
     case 'error':
-      return file.error || '失败';
+      return file.error ? errorText(file.error) : t('gui.meta.failed');
     case 'done': {
       const r = file.result;
-      if (isStale(file)) return `${size} · 设置已更改，待重新压缩`;
-      if (!r.changed) return `${size} · 已无压缩空间，原样保存`;
-      return `${formatBytes(r.before)} → ${formatBytes(r.after)} · 图片 ${r.optimized}/${r.images} · 清晰度 ${r.clarity}`;
+      if (isStale(file)) return t('gui.meta.stale', { size });
+      if (!r.changed) return t('gui.meta.unchanged', { size });
+      return t('gui.meta.done', {
+        before: formatBytes(r.before),
+        after: formatBytes(r.after),
+        optimized: r.optimized,
+        images: r.images,
+        clarity: r.clarity,
+      });
     }
     default:
-      return `${size} · 等待压缩`;
+      return t('gui.meta.waiting', { size });
   }
 }
 
@@ -207,9 +263,9 @@ function renderRow(file) {
   li.dataset.state = file.state;
   const name = li.querySelector('.name');
   name.textContent = file.rel || file.name;
-  name.title = file.output ? `已保存到 ${file.output}` : file.rel || file.name;
+  name.title = file.output ? t('gui.savedTo', { path: file.output }) : file.rel || file.name;
   li.querySelector('.meta').textContent = metaText(file);
-  const progress = file.state === 'running' ? file.progress : file.state === 'uploading' ? file.progress : 0;
+  const progress = file.state === 'running' || file.state === 'uploading' ? file.progress : 0;
   li.querySelector('.bar > span').style.width = `${Math.round(progress * 100)}%`;
   li.querySelector('.saved').textContent =
     file.result && file.result.changed && !isStale(file) ? `−${percentSaved(file.result.before, file.result.after)}` : '';
@@ -224,16 +280,26 @@ function renderSummary() {
   const active = files.some((f) => f.state === 'queued' || f.state === 'running');
   const done = files.filter((f) => f.state === 'done' && f.result && !isStale(f));
 
-  let text = files.length === 0 ? '还没有文件' : `${files.length} 个文件 · ${formatBytes(files.reduce((s, f) => s + f.size, 0))}`;
-  if (done.length > 0) {
+  let html;
+  if (files.length === 0) {
+    html = I18N.rich('gui.summary.empty');
+  } else if (done.length > 0) {
     const before = done.reduce((s, f) => s + f.result.before, 0);
     const after = done.reduce((s, f) => s + f.result.after, 0);
-    text = `已完成 ${done.length}/${files.length} · ${formatBytes(before)} → ${formatBytes(after)}，节省 <b>${percentSaved(before, after)}</b>`;
+    html = I18N.rich('gui.summary.done', {
+      done: done.length,
+      total: files.length,
+      before: formatBytes(before),
+      after: formatBytes(after),
+      pct: percentSaved(before, after),
+    });
+  } else {
+    html = I18N.rich('gui.summary.files', { n: files.length, size: formatBytes(files.reduce((s, f) => s + f.size, 0)) });
   }
-  if (uploading > 0) text += ` · 正在上传 ${uploading} 个`;
-  el.summary.innerHTML = text;
+  if (uploading > 0) html += I18N.rich('gui.summary.uploading', { n: uploading });
+  el.summary.innerHTML = html;
 
-  el.start.textContent = active ? '停止' : '开始压缩';
+  el.start.textContent = t(active ? 'gui.stop' : 'gui.start');
   el.start.classList.toggle('stop', active);
   el.start.disabled = !active && !files.some(needsWork);
   el.clear.disabled = files.length === 0 || files.every((f) => f.state === 'running' || f.state === 'uploading');
@@ -292,8 +358,8 @@ function uploadOne({ file, rel }) {
       placeholder.progress = event.loaded / event.total;
       renderRow(placeholder);
     };
-    const fail = (message) => {
-      upsert({ ...placeholder, state: 'error', error: message });
+    const fail = (error) => {
+      upsert({ ...placeholder, state: 'error', error });
       resolve();
     };
     xhr.onload = () => {
@@ -306,11 +372,13 @@ function uploadOne({ file, rel }) {
       if (xhr.status === 200 && data && data.id) {
         replaceFile(tempId, data);
         resolve();
+      } else if (data && data.code) {
+        fail({ code: data.code, params: data.params, message: data.error });
       } else {
-        fail((data && data.error) || `上传失败（${xhr.status}）`);
+        fail({ code: 'gui.upload.failed', params: { status: xhr.status } });
       }
     };
-    xhr.onerror = () => fail('上传失败：无法连接 ShibaSlim');
+    xhr.onerror = () => fail({ code: 'gui.upload.offline' });
     xhr.send(file);
   });
 }
@@ -320,10 +388,10 @@ async function addFiles(items) {
   const accepted = visible.filter(({ file }) => EXT.test(file.name));
   const skipped = visible.length - accepted.length;
   if (accepted.length === 0) {
-    toast(skipped > 0 ? '没有找到 PPT 文件' : '没有可添加的文件');
+    toast(t(skipped > 0 ? 'gui.toast.noPpt' : 'gui.toast.nothing'));
     return;
   }
-  if (skipped > 0) toast(`已添加 ${accepted.length} 个，跳过 ${skipped} 个不是 PPT 的文件`);
+  if (skipped > 0) toast(t('gui.toast.skipped', { added: accepted.length, skipped }));
   await pool(accepted, UPLOAD_CONCURRENCY, uploadOne);
 }
 
@@ -399,19 +467,19 @@ el.list.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-act]');
   if (!button) return;
   const id = button.closest('.row').dataset.id;
-  const t = encodeURIComponent(token);
+  const tok = encodeURIComponent(token);
   try {
     switch (button.dataset.act) {
       case 'preview':
-        if (window.open(`/api/preview/${id}?t=${t}&c=${state.clarity}`, '_blank')) {
-          toast('正在生成对比页面，会在新标签页打开');
+        if (window.open(`/api/preview/${id}?t=${tok}&c=${state.clarity}`, '_blank')) {
+          toast(t('gui.toast.previewOpening'));
         } else {
-          toast('浏览器拦截了新标签页，请允许本页面弹出窗口后再试');
+          toast(t('gui.toast.popupBlocked'));
         }
         break;
       case 'download': {
         const a = document.createElement('a');
-        a.href = `/api/download/${id}?t=${t}`;
+        a.href = `/api/download/${id}?t=${tok}`;
         a.download = '';
         a.click();
         break;
@@ -425,7 +493,7 @@ el.list.addEventListener('click', async (event) => {
         break;
     }
   } catch (err) {
-    toast(err.message);
+    toast(errorText(err));
   }
 });
 
@@ -435,7 +503,7 @@ el.start.addEventListener('click', async () => {
   try {
     if (active) {
       await api('/api/stop', { method: 'POST' });
-      toast('当前文件压缩完后停止');
+      toast(t('gui.toast.stopping'));
       return;
     }
     const ids = files.filter(needsWork).map((f) => f.id);
@@ -443,7 +511,7 @@ el.start.addEventListener('click', async () => {
     await api('/api/compress', { method: 'POST', body: { ids, clarity: state.clarity, outDir: state.outDir } });
     for (const id of ids) state.sentWith.set(id, { clarity: state.clarity, outDir: state.outDir });
   } catch (err) {
-    toast(err.message);
+    toast(errorText(err));
   }
 });
 
@@ -452,7 +520,7 @@ el.clear.addEventListener('click', async () => {
   try {
     await api('/api/files', { method: 'DELETE' });
   } catch (err) {
-    toast(err.message);
+    toast(errorText(err));
   }
 });
 
@@ -469,7 +537,7 @@ el.pickDir.addEventListener('click', async () => {
     const { path } = await api('/api/pick-dir', { method: 'POST' });
     if (path) setOutDir(path);
   } catch (err) {
-    toast(err.message);
+    toast(errorText(err));
   } finally {
     el.pickDir.disabled = false;
   }
@@ -479,19 +547,19 @@ el.openDir.addEventListener('click', async () => {
   try {
     await api('/api/open-dir', { method: 'POST', body: { path: state.outDir } });
   } catch (err) {
-    toast(err.message);
+    toast(errorText(err));
   }
 });
 
 el.quit.addEventListener('click', async () => {
-  if (!confirm('退出后需要重新运行 shibaslim gui 才能继续使用。确定退出吗？')) return;
+  if (!confirm(t('gui.confirmQuit'))) return;
   try {
     await api('/api/quit', { method: 'POST' });
   } catch {
     // already gone
   }
   state.stopped = true;
-  showBanner('ShibaSlim 已退出，可以关闭这个页面了。');
+  showBanner('gui.banner.quit');
   for (const control of document.querySelectorAll('button, input')) control.disabled = true;
 });
 
@@ -509,26 +577,39 @@ function connectEvents() {
     }
   };
   source.onopen = () => {
-    if (!state.stopped) el.banner.hidden = true;
+    if (!state.stopped) hideBanner();
   };
   source.onerror = () => {
-    if (!state.stopped) showBanner('与 ShibaSlim 的连接已断开。如果关掉了终端窗口，请重新运行 shibaslim gui，并打开新的地址。');
+    if (!state.stopped) showBanner('gui.banner.disconnected');
   };
 }
 
+/** Re-renders every piece of text when the language changes, keeping all other state. */
+function relabel() {
+  I18N.apply(document);
+  renderSettings();
+  renderAll();
+  renderBanner();
+}
+
 async function init() {
+  I18N.bindSelects(el.theme, el.lang);
+  I18N.onLangChange(relabel);
+  I18N.apply(document);
+  renderSummary();
   if (!token) {
-    showBanner('缺少访问口令。请使用终端里显示的完整地址打开（?t= 后面那一段不能省略）。');
+    showBanner('gui.banner.noToken');
     return;
   }
   let data;
   try {
     data = await api('/api/state');
   } catch (err) {
-    showBanner(err.message);
+    el.banner.textContent = errorText(err);
+    el.banner.hidden = false;
     return;
   }
-  state.clarityDetails = data.clarityDetails;
+  state.claritySettings = data.claritySettings;
   state.defaultOutDir = data.defaultOutDir;
   const saved = loadSettings();
   state.clarity = Math.min(100, Math.max(1, Math.round(Number(saved.clarity) || data.defaultClarity)));

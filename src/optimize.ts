@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { IMAGE_EXT, JPEG_EXT, PNG_EXT, optimizeImage, type ImageOutcome, type ImageSettings } from './images.js';
+import { IMAGE_EXT, JPEG_EXT, PNG_EXT, optimizeImage, type ImageOutcome, type ImageSettings, type Reason } from './images.js';
+import { t } from './messages.js';
 import { DEFAULT_CLARITY, PRESET_CLARITY, settingsForClarity, type Preset, type PresetName } from './clarity.js';
 import { OpcPackage, SlimError, extOf } from './opc.js';
 import { buildPreview } from './preview.js';
@@ -26,7 +27,10 @@ export interface ImageReport {
   /** Set when the image changed format and therefore file name. */
   newPart?: string;
   status: ImageOutcome['status'];
+  /** Why the image was left alone, in Chinese (what the command line prints). */
   note?: string;
+  /** The same reason as a message key, for pages that show it in another language. */
+  reason?: Reason;
   before: number;
   after: number;
   width: number;
@@ -55,21 +59,21 @@ export type Settings = Preset & ImageSettings & { clarity: number; stripThumbnai
 
 export function resolveSettings(options: OptimizeOptions): Settings {
   if (options.clarity !== undefined && options.preset !== undefined) {
-    throw new SlimError('清晰度和预设只能指定一个');
+    throw new SlimError('error.clarityAndPreset');
   }
   let clarity = options.clarity ?? DEFAULT_CLARITY;
   if (options.preset !== undefined) {
     const named = PRESET_CLARITY[options.preset];
-    if (named === undefined) throw new SlimError(`未知预设：${options.preset}（可选 hq、balanced、max）`);
+    if (named === undefined) throw new SlimError('error.unknownPreset', { name: String(options.preset) });
     clarity = named;
   }
   const base = settingsForClarity(clarity);
   const ppi = options.ppi ?? base.ppi;
   const jpegQuality = options.jpegQuality ?? base.jpegQuality;
   const pngQuality = options.pngQuality ?? base.pngQuality;
-  if (!(ppi >= 30 && ppi <= 1200)) throw new SlimError('ppi 需在 30 到 1200 之间');
-  if (!(jpegQuality >= 1 && jpegQuality <= 100)) throw new SlimError('JPEG 质量需在 1 到 100 之间');
-  if (!(pngQuality >= 0 && pngQuality <= 100)) throw new SlimError('PNG 质量需在 0 到 100 之间');
+  if (!(ppi >= 30 && ppi <= 1200)) throw new SlimError('error.ppiRange');
+  if (!(jpegQuality >= 1 && jpegQuality <= 100)) throw new SlimError('error.jpegRange');
+  if (!(pngQuality >= 0 && pngQuality <= 100)) throw new SlimError('error.pngRange');
   return {
     clarity,
     ppi,
@@ -266,13 +270,15 @@ async function processImage(
     outcome = await optimizeImage(data, need, settings);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    return { ...base, status: 'skipped', note: `无法解码（${reason}）`, width: 0, height: 0, newWidth: 0, newHeight: 0 };
+    const why = { code: 'note.decodeFailed' as const, params: { detail: reason } };
+    return { ...base, status: 'skipped', note: t('zh', why.code, why.params), reason: why, width: 0, height: 0, newWidth: 0, newHeight: 0 };
   }
 
   const { width, height, newWidth, newHeight } = outcome;
   const dims = { width, height, newWidth, newHeight };
   if (outcome.status !== 'optimized' || !outcome.data || !outcome.format) {
-    return { ...base, status: outcome.status, ...(outcome.note ? { note: outcome.note } : {}), ...dims };
+    const why = outcome.reason ? { note: t('zh', outcome.reason.code, outcome.reason.params), reason: outcome.reason } : {};
+    return { ...base, status: outcome.status, ...why, ...dims };
   }
 
   const isJpeg = outcome.format === 'jpeg';
@@ -294,13 +300,13 @@ async function processImage(
 async function verify(output: Buffer, danglingBefore: number, images: ImageReport[]): Promise<void> {
   const check = await OpcPackage.load(output);
   if (check.danglingCount() > danglingBefore) {
-    throw new SlimError('内部校验失败：压缩后存在失效的引用，已放弃输出');
+    throw new SlimError('error.verifyRefs');
   }
   for (const image of images) {
     if (image.status !== 'optimized') continue;
     const part = image.newPart ?? image.part;
     if (!check.has(part) || !check.contentType(part)?.startsWith('image/')) {
-      throw new SlimError(`内部校验失败：${part} 写入不完整，已放弃输出`);
+      throw new SlimError('error.verifyPart', { part });
     }
   }
 }

@@ -21,8 +21,8 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/gui-dark.png">
-    <img src="docs/gui-light.png" width="820" alt="ShibaSlim 图形界面：拖入文件、调整清晰度、批量压缩">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/gui-zh-dark.png">
+    <img src="docs/gui-zh-light.png" width="820" alt="ShibaSlim 图形界面：拖入文件、调整清晰度、批量压缩">
   </picture>
   <br>
   <sub>截图中的文件是用程序生成的演示文稿，实际能省多少取决于原图。</sub>
@@ -34,6 +34,7 @@
 - **一个清晰度参数**：1–100 一个数字，同时调好分辨率、JPEG 质量和 PNG 减色，不用研究参数。
 - **压缩前后对比**：随机抽几页，左右拖动分界线对比原图和压缩后，可以放大到 4 倍看细节。
 - **图形界面和命令行**：在浏览器里拖入文件或整个文件夹，或者用命令行批量处理目录。
+- **浅色 / 深色，中文 / English**：页面默认跟随系统的主题和语言，也可以在右上角手动切换，选择会被记住。
 - **不会弄丢文件**：默认不动原文件，结果另存为新文件；图形界面从不覆盖已有文件。每次写出前都会重新读取结果校验一遍。
 - **本机运行**：文件不会上传到网络，macOS、Windows、Linux 通用。
 
@@ -66,19 +67,21 @@ npm install
 3. 想先看效果，就点文件右侧的“对比”，会在新标签页打开对比页面。这一步只是试压，不保存任何文件。
 4. 点“开始压缩”。完成后可以直接“下载”，或者点“显示”在文件夹中找到它。
 
+页面右上角可以切换主题（跟随系统 / 浅色 / 深色）和语言（跟随系统 / 中文 / English）。默认都跟随系统，系统设置改变时页面会实时跟着变；手动选择后会被记住，对比页面也会沿用同样的选择。
+
 压缩结果默认保存到 `下载/ShibaSlim`，可以在页面上修改。输出文件保持原名，拖入文件夹时保留原来的目录结构。如果保存位置里已有同名文件，会另存为 `名称 (2).pptx`。
 
 > [!NOTE]
 > 页面只在本机的 `127.0.0.1` 上提供，地址里带一次性的访问口令，其他电脑和其他网页都无法访问。拖进来的文件会先复制到系统临时文件夹，退出时自动删除。用完点页面右上角的“退出”，或者直接关掉终端窗口。
 
-`shibaslim gui` 支持两个选项：`--port <端口>` 指定端口（默认随机选一个空闲端口），`--no-browser` 只打印地址、不自动打开浏览器。
+`shibaslim gui` 支持两个选项：`--port <端口>` 指定端口（默认 51735，被占用时自动换一个空闲端口），`--no-browser` 只打印地址、不自动打开浏览器。
 
 ## 对比页面
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/compare-dark.jpg">
-    <img src="docs/compare-light.jpg" width="820" alt="对比页面：左边原图，右边压缩后，中间是可拖动的分界线">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/compare-zh-dark.jpg">
+    <img src="docs/compare-zh-light.jpg" width="820" alt="对比页面：左边原图，右边压缩后，中间是可拖动的分界线">
   </picture>
 </p>
 
@@ -88,7 +91,7 @@ npm install
 - 点左上角的“原图”或右上角的“压缩后”可以整页切换，来回切换最容易看出差别。
 - 选中画面后，可以用 <kbd>←</kbd> <kbd>→</kbd> 移动分界线，按住 <kbd>Shift</kbd> 微调，<kbd>Home</kbd> / <kbd>End</kbd> 直接跳到两端。
 - 每页下方的表格列出每张图片压缩前后的尺寸和大小。
-- 页面是一个独立的 HTML 文件，图片都内嵌在里面，可以直接发给别人看。
+- 页面是一个独立的 HTML 文件，图片都内嵌在里面，可以直接发给别人看；对方打开时同样会按自己系统的主题和语言显示。
 
 > [!NOTE]
 > 对比页面只画图片。文字、形状和图表在压缩前后完全一样，所以没有画出来，页面会比真实的幻灯片显得空一些。
@@ -229,6 +232,7 @@ npm test
 | `src/inputs.ts` | 展开文件、目录和通配符，计算输出路径 |
 | `src/cli.ts` | 命令行与批量处理 |
 | `src/gui.ts` | 图形界面的本地服务：上传、排队压缩、进度推送 |
+| `src/messages.ts` | 页面的中英文文案，以及两个页面共用的主题和语言切换脚本 |
 | `gui/` | 图形界面的网页（HTML、CSS、JS，无需构建） |
 
 </details>

@@ -233,7 +233,8 @@ describe('buildPreview', () => {
       ...overrides,
     });
 
-  const sections = (html) => html.split('<section class="slide">').slice(1);
+  const sections = (html) => html.split('<section class="slide"').slice(1);
+  const slideOf = (html, n) => sections(html).find((s) => s.startsWith(` data-slide="${n}"`));
   const images = (html) => JSON.parse(/const IMAGES = (\{.*?\});\n/s.exec(html)[1]);
 
   test('shows the requested number of random slides', async () => {
@@ -244,7 +245,7 @@ describe('buildPreview', () => {
 
   test('only samples slides whose pictures changed', async () => {
     const html = await preview({ pages: 100 });
-    const pages = [...html.matchAll(/<h2>第 (\d+) 页<\/h2>/g)].map((m) => Number(m[1]));
+    const pages = [...html.matchAll(/<section class="slide" data-slide="(\d+)">/g)].map((m) => Number(m[1]));
     // Slide 7 uses "set transparent colour" and slide 8 has a tiny icon: neither changes.
     assert.deepEqual(pages, [1, 2, 3, 4, 5, 6, 9]);
   });
@@ -256,17 +257,18 @@ describe('buildPreview', () => {
     assert.ok(referenced.size > 0);
     for (const id of referenced) assert.match(table[id], /^data:image\/(jpeg|png);base64,/);
     // Slide 4 holds the PNG photo that became a JPEG: the two layers must use different images.
-    const slide4 = sections(html).find((s) => s.includes('<h2>第 4 页</h2>'));
+    const slide4 = slideOf(html, 4);
     const [before, after] = [...slide4.matchAll(/data-src="(i\d+)"/g)].map((m) => m[1]);
     assert.notEqual(before, after);
     assert.match(table[before], /^data:image\/png/);
     assert.match(table[after], /^data:image\/jpeg/);
     assert.match(slide4, /PNG 转 JPEG/);
+    assert.match(slide4, /data-t="preview.note.converted" data-p="\{&quot;from&quot;:&quot;PNG&quot;,&quot;to&quot;:&quot;JPEG&quot;\}"/);
   });
 
   test('draws a cropped picture with only its visible part in the frame', async () => {
     const html = await preview({ pages: 100 });
-    const slide3 = sections(html).find((s) => s.includes('<h2>第 3 页</h2>'));
+    const slide3 = slideOf(html, 3);
     // 25% cropped from every side: the bitmap is drawn at twice the frame size, shifted by a quarter of it.
     assert.match(slide3, /<img data-src="i\d+" alt="" style="left:-50%;top:-50%;width:200%;height:200%">/);
   });
@@ -375,7 +377,7 @@ describe('cli', () => {
     assert.deepEqual(await readdir(out), ['a.preview.html']);
     const html = await readFile(entry.preview, 'utf8');
     assert.match(html, /<span class="value">40<\/span>/);
-    assert.equal(html.split('<section class="slide">').length - 1, 3, 'three pages by default');
+    assert.equal(html.split('<section class="slide"').length - 1, 3, 'three pages by default');
   });
 
   test('rejects an invalid clarity', async () => {
