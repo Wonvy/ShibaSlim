@@ -279,11 +279,33 @@ function removeOrphans(pkg: OpcPackage): number {
 
 function stripThumbnail(pkg: OpcPackage): boolean {
   const root = pkg.relsFiles.find((f) => f.source === '');
-  const rel = root?.rels.find((r) => r.part && r.type.endsWith('/thumbnail'));
+  const rel = thumbnailRel(pkg);
   if (!root || !rel?.part) return false;
   pkg.removeRel(root, rel);
   if (!pkg.referencedParts().has(rel.part)) pkg.remove(rel.part);
   return true;
+}
+
+function thumbnailRel(pkg: OpcPackage) {
+  return pkg.relsFiles.find((f) => f.source === '')?.rels.find((r) => r.part && r.type.endsWith('/thumbnail'));
+}
+
+/** Largest thumbnail worth handing to a browser; PowerPoint writes about 256 px wide, a few KB. */
+const MAX_THUMBNAIL = 2 * 1024 * 1024;
+
+/**
+ * The preview picture the presentation carries (PowerPoint saves its first slide there), if it is
+ * a JPEG or PNG a browser can show. Older files may hold a metafile instead, which is skipped.
+ */
+export async function thumbnailOf(pkg: OpcPackage): Promise<{ type: 'image/jpeg' | 'image/png'; data: Buffer } | null> {
+  const part = thumbnailRel(pkg)?.part;
+  if (!part || !pkg.has(part)) return null;
+  if ((pkg.entryInfo(part)?.size ?? 0) > MAX_THUMBNAIL) return null;
+  const data = await pkg.read(part);
+  if (data.length > MAX_THUMBNAIL) return null;
+  if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return { type: 'image/jpeg', data };
+  if (data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return { type: 'image/png', data };
+  return null;
 }
 
 function imageParts(pkg: OpcPackage): string[] {

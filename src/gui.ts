@@ -8,12 +8,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import { checkSignatureOf, defaultKeyPath, keyFileFingerprint, loadOrCreateKey, resolveAttribution, type SignatureStatus } from './attribution.js';
+import { checkSignature, defaultKeyPath, keyFileFingerprint, loadOrCreateKey, resolveAttribution, type SignatureStatus } from './attribution.js';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
 import { DEFAULT_SUFFIX, EXT_RE, SIGNED_SUFFIX } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
-import { SlimError } from './opc.js';
-import { attributeFile, optimizeFile, type AttributeReport, type OptimizeReport } from './optimize.js';
+import { OpcPackage, SlimError } from './opc.js';
+import { attributeFile, optimizeFile, thumbnailOf, type AttributeReport, type OptimizeReport } from './optimize.js';
 
 /** A fixed port keeps the page's address stable, so its saved settings survive restarts. */
 export const DEFAULT_PORT = 51735;
@@ -89,6 +89,8 @@ interface Entry {
   error?: ErrorInfo;
   /** The ShibaSlim signature the dropped file already carries, if any. */
   signature?: SignatureView;
+  /** The file carries a preview picture, served at /api/thumb/<id>. */
+  thumb?: boolean;
 }
 
 interface SignatureView {
@@ -168,9 +170,10 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   /** Output paths this session wrote, so a re-run may overwrite its own file but never anyone else's. */
   const written = new Map<string, string>();
   const previews = new Map<string, Promise<string>>();
+  const thumbs = new Map<string, { type: string; data: Buffer }>();
   let running = false;
   let port = 0;
-  /** Signature checks of dropped files run one at a time: each reads the whole file. */
+  /** Dropped files are inspected one at a time: each is read whole. */
   let inspecting: Promise<void> = Promise.resolve();
 
   // Index = clarity; the page formats these in its own language.
@@ -187,6 +190,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     output: e.output,
     error: e.error,
     signature: e.signature,
+    thumb: e.thumb,
   });
 
   const broadcast = (event: object) => {
@@ -283,10 +287,18 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     return pending;
   }
 
-  /** Shows a dropped file's existing signature, if it has one, next to it in the list. */
+  /** Shows a dropped file's preview picture and the signature it already has, if any, in the list. */
   async function inspect(entry: Entry): Promise<void> {
     try {
-      const check = await checkSignatureOf(await readFile(entry.source));
+      const pkg = await OpcPackage.load(await readFile(entry.source));
+      if (entries.get(entry.id) !== entry) return;
+      const thumb = await thumbnailOf(pkg);
+      if (thumb && entries.get(entry.id) === entry) {
+        thumbs.set(entry.id, thumb);
+        entry.thumb = true;
+        update(entry);
+      }
+      const check = await checkSignature(pkg);
       if (check.status === 'unsigned' || entries.get(entry.id) !== entry) return;
       const own = check.fingerprint ? await keyFileFingerprint(keyFile).catch(() => null) : null;
       entry.signature = {
@@ -308,6 +320,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     if (!entry) return;
     if (entry.state === 'running') throw new HttpError(409, 'error.removeRunning');
     entries.delete(id);
+    thumbs.delete(id);
     for (const key of previews.keys()) if (key.startsWith(`${id}:`)) previews.delete(key);
     await rm(entry.source, { force: true });
     broadcast({ type: 'removed', id });
@@ -443,6 +456,20 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       const file = await previewFor(entry, clarity);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       await pipeline(createReadStream(file), res);
+      return;
+    }
+
+    if (resource === 'thumb' && method === 'GET') {
+      const thumb = thumbs.get(entryOr404().id);
+      if (!thumb) throw new HttpError(404, 'error.pageNotFound');
+      res.writeHead(200, {
+        'Content-Type': thumb.type,
+        'Content-Length': thumb.data.length,
+        // Each upload gets a new id, so what is served under one never changes.
+        'Cache-Control': 'private, max-age=86400, immutable',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(thumb.data);
       return;
     }
 

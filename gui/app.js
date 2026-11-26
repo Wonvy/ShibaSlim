@@ -253,7 +253,7 @@ function createRow(file) {
   li.className = 'row';
   li.dataset.id = file.id;
   li.innerHTML = `
-    <div class="badge">PPT</div>
+    <div class="badge"><span>PPT</span></div>
     <div class="info">
       <div class="name"></div>
       <div class="meta"></div>
@@ -320,6 +320,19 @@ function metaText(file) {
   }
 }
 
+/** Puts the preview picture the file carries in place of the PPT badge, once it has loaded. */
+function showThumb(li, id) {
+  const badge = li.querySelector('.badge');
+  if (badge.querySelector('img')) return;
+  const img = new Image();
+  img.alt = '';
+  img.decoding = 'async';
+  img.onload = () => badge.classList.add('has-thumb');
+  img.onerror = () => img.remove();
+  img.src = `/api/thumb/${encodeURIComponent(id)}?t=${encodeURIComponent(token)}`;
+  badge.append(img);
+}
+
 function renderRow(file) {
   let li = rowFor(file.id);
   if (!li) {
@@ -327,6 +340,7 @@ function renderRow(file) {
     el.list.append(li);
   }
   li.dataset.state = file.state;
+  if (file.thumb) showThumb(li, file.id);
   const name = li.querySelector('.name');
   name.textContent = file.rel || file.name;
   name.title = file.output ? t('gui.savedTo', { path: file.output }) : file.rel || file.name;

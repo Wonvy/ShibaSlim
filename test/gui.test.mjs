@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import JSZip from 'jszip';
+import sharp from 'sharp';
 import { checkSignatureOf, keyFileFingerprint } from '../dist/index.js';
 import { DEFAULT_PORT, startGui } from '../dist/gui.js';
 import { buildFixture } from './fixture.mjs';
@@ -317,6 +318,42 @@ describe('gui server', () => {
     controller.abort();
     assert.match(text, /"type":"entry"/);
     assert.ok(text.includes(`"name":"live.pptx"`));
+  });
+
+  test('shows the preview picture a dropped file carries', async () => {
+    const picture = await sharp({ create: { width: 256, height: 144, channels: 3, background: '#e8702a' } }).jpeg().toBuffer();
+    const zip = await JSZip.loadAsync(fixture.data);
+    zip.file('docProps/thumbnail.jpeg', picture);
+    const rels = await zip.file('_rels/.rels').async('string');
+    zip.file(
+      '_rels/.rels',
+      rels.replace('</Relationships>', '<Relationship Id="rId99" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/thumbnail" Target="docProps/thumbnail.jpeg"/></Relationships>'),
+    );
+    // Dropped files are looked at in order, so once the second reports its picture the first is done.
+    const { data: without } = await upload('plain.pptx');
+    const { data: withThumb } = await upload('cover.pptx', undefined, await zip.generateAsync({ type: 'nodebuffer' }));
+
+    const deadline = Date.now() + 10000;
+    let seen;
+    while (!(seen = (await call('/api/state')).data.files.find((f) => f.id === withThumb.id))?.thumb) {
+      assert.ok(Date.now() < deadline, 'the thumbnail was not reported');
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const thumb = await call(`/api/thumb/${withThumb.id}`);
+    assert.equal(thumb.status, 200);
+    assert.equal(thumb.headers.get('content-type'), 'image/jpeg');
+    assert.ok(thumb.data.equals(picture));
+    assert.equal((await call(`/api/thumb/${withThumb.id}`, { token: null })).status, 401);
+    // An <img> cannot send headers, so the page passes the token in the address.
+    assert.equal((await fetch(`${base}/api/thumb/${withThumb.id}?t=${server.token}`)).status, 200);
+
+    assert.equal(seen.thumb, true);
+    assert.equal((await call('/api/state')).data.files.find((f) => f.id === without.id).thumb, undefined);
+    assert.equal((await call(`/api/thumb/${without.id}`)).status, 404);
+
+    await call(`/api/files/${withThumb.id}`, { method: 'DELETE' });
+    assert.equal((await call(`/api/thumb/${withThumb.id}`)).status, 404);
+    await call(`/api/files/${without.id}`, { method: 'DELETE' });
   });
 
   test('removes files from the list', async () => {
