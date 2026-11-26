@@ -25,6 +25,8 @@ async function stop(code = 0) {
 try {
   server = await startGui({
     desktop: true,
+    appVersion: process.env.SHIBASLIM_APP_VERSION,
+    onCheckUpdate: () => send({ type: 'check-update' }),
     // The page's own quit button (hidden in the desktop app, but the endpoint still works).
     onQuit: () => {
       send({ type: 'quit' });

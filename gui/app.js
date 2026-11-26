@@ -26,6 +26,7 @@ const el = {
   clear: document.getElementById('clear'),
   start: document.getElementById('start'),
   quit: document.getElementById('quit'),
+  update: document.getElementById('update'),
   fileInput: document.getElementById('file-input'),
   folderInput: document.getElementById('folder-input'),
   overlay: document.getElementById('overlay'),
@@ -45,6 +46,8 @@ const state = {
   stopped: false,
   /** Running inside the desktop app rather than a browser tab. */
   desktop: false,
+  /** The desktop app's version, when it can look for updates. */
+  appVersion: null,
   /** The banner as a message key, so it can be shown again in another language. */
   banner: null,
 };
@@ -553,6 +556,19 @@ el.openDir.addEventListener('click', async () => {
   }
 });
 
+function renderUpdateTitle() {
+  if (state.appVersion) el.update.title = t('gui.checkUpdateTitle', { version: state.appVersion });
+}
+
+el.update.addEventListener('click', async () => {
+  try {
+    await api('/api/check-update', { method: 'POST' });
+    toast(t('gui.toast.checkingUpdate'));
+  } catch (err) {
+    toast(errorText(err));
+  }
+});
+
 el.quit.addEventListener('click', async () => {
   if (!confirm(t('gui.confirmQuit'))) return;
   try {
@@ -589,6 +605,7 @@ function connectEvents() {
 /** Re-renders every piece of text when the language changes, keeping all other state. */
 function relabel() {
   I18N.apply(document);
+  renderUpdateTitle();
   renderSettings();
   renderAll();
   renderBanner();
@@ -617,6 +634,9 @@ async function init() {
   // In the desktop app the window's close button quits, and results are already saved where they belong.
   document.documentElement.classList.toggle('desktop', state.desktop);
   el.quit.hidden = state.desktop;
+  state.appVersion = data.canUpdate ? data.appVersion : null;
+  el.update.hidden = !data.canUpdate;
+  renderUpdateTitle();
   const saved = loadSettings();
   state.clarity = Math.min(100, Math.max(1, Math.round(Number(saved.clarity) || data.defaultClarity)));
   state.outDir = typeof saved.outDir === 'string' && saved.outDir ? saved.outDir : data.defaultOutDir;

@@ -29,6 +29,10 @@ export interface GuiOptions {
    * the quit button (closing the window quits) and downloading results (they are already saved).
    */
   desktop?: boolean;
+  /** The desktop app's version, shown on its "Check for updates" button. */
+  appVersion?: string;
+  /** Called when the page asks the desktop app to look for an update; the button only appears when this is set. */
+  onCheckUpdate?: () => void;
 }
 
 export interface GuiServer {
@@ -276,7 +280,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (resource === 'state' && method === 'GET') {
-      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true });
+      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate) });
     }
 
     if (resource === 'events' && method === 'GET') {
@@ -390,6 +394,12 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     if (resource === 'pick-dir' && method === 'POST') {
       const lang: Locale = req.headers['x-shiba-lang'] === 'en' ? 'en' : 'zh';
       return json(res, { path: await pickFolder(t(lang, 'gui.pickPrompt')) });
+    }
+
+    if (resource === 'check-update' && method === 'POST' && options.onCheckUpdate) {
+      // The app shows its own native dialogs from here on.
+      options.onCheckUpdate();
+      return json(res, { ok: true });
     }
 
     if (resource === 'quit' && method === 'POST') {

@@ -17,9 +17,23 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "nsis", "appimage", "deb"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-    "externalBin": ["binaries/shibaslim-node"],
+    "targets": [
+      "app",
+      "dmg",
+      "nsis",
+      "appimage",
+      "deb"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/shibaslim-node"
+    ],
     "resources": {
       "engine/": "engine/"
     },
@@ -33,18 +47,53 @@
     "macOS": {
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-",
-      "entitlements": "Entitlements.plist"
+      "entitlements": "Entitlements.plist",
+      "infoPlist": "Info.plist",
+      "dmg": {
+        "background": "installer/dmg-background.png",
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 180
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 180
+        }
+      }
     },
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["SimpChinese", "English"],
-        "displayLanguageSelector": false
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "headerImage": "installer/nsis-header.bmp",
+        "sidebarImage": "installer/nsis-sidebar.bmp"
       }
     },
     "linux": {
       "deb": {
         "section": "graphics"
+      }
+    },
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM2RDlCNzNFRUJGMUE4REEKUldUYXFQSHJQcmZaTmhPLzhJTTlRUHNkYzlKMlFpSVV6SVNTbDJ0Q1RjQnNRY3JmYi9ETHRyU2sK",
+      "endpoints": [
+        "https://github.com/Wonvy/ShibaSlim/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

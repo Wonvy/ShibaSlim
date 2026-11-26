@@ -66,6 +66,8 @@ const zh = {
   // Graphical interface.
   'gui.tagline': '压缩 PPT 里的图片，文字和版式保持不变',
   'gui.quit': '退出',
+  'gui.checkUpdate': '检查更新',
+  'gui.checkUpdateTitle': '当前版本 {version}，点此检查有没有新版本',
   'gui.quitTitle': '关闭本地服务',
   'gui.settingsLabel': '压缩设置',
   'gui.clarity': '清晰度',
@@ -123,6 +125,7 @@ const zh = {
   'gui.toast.skipped': '已添加 {added} 个，跳过 {skipped} 个不是 PPT 的文件',
   'gui.toast.previewOpening': '正在生成对比页面，会在新标签页打开',
   'gui.toast.previewWindow': '正在生成对比页面，会在新窗口打开',
+  'gui.toast.checkingUpdate': '正在检查更新…',
   'gui.toast.popupBlocked': '浏览器拦截了新标签页，请允许本页面弹出窗口后再试',
   'gui.toast.stopping': '当前文件压缩完后停止',
   'gui.upload.failed': '上传失败（{status}）',
@@ -231,6 +234,8 @@ const en: Record<MessageKey, string> = {
 
   'gui.tagline': 'Shrinks the images in your slides; text and layout stay as they are',
   'gui.quit': 'Quit',
+  'gui.checkUpdate': 'Check for updates',
+  'gui.checkUpdateTitle': 'Version {version}. Click to see if there is a newer one.',
   'gui.quitTitle': 'Stop the local server',
   'gui.settingsLabel': 'Compression settings',
   'gui.clarity': 'Clarity',
@@ -288,6 +293,7 @@ const en: Record<MessageKey, string> = {
   'gui.toast.skipped': 'Added {added}, skipped {skipped} {skipped|file|files} that {skipped|is|are} not PowerPoint',
   'gui.toast.previewOpening': 'Building the comparison; it will open in a new tab',
   'gui.toast.previewWindow': 'Building the comparison; it will open in a new window',
+  'gui.toast.checkingUpdate': 'Checking for updates…',
   'gui.toast.popupBlocked': 'The browser blocked the new tab. Allow pop-ups for this page and try again.',
   'gui.toast.stopping': 'Stopping after the current file',
   'gui.upload.failed': 'Upload failed ({status})',

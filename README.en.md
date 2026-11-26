@@ -37,6 +37,7 @@
 - **One clarity setting**: a single number from 1 to 100 sets resolution, JPEG quality and PNG colour reduction together.
 - **Before/after comparison**: picks a few random slides and lets you drag a divider between the original and the compressed version, with up to 4× zoom.
 - **Desktop app, web page and CLI**: install the app and double-click, with no Node.js needed, and share it as a single file; or use it in a browser, or batch-process folders from the command line.
+- **Online updates**: the desktop app looks for a new version when it starts; one click downloads it, installs it and reopens the app.
 - **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
 - **Your files are safe**: originals are left alone by default and results are saved as new files; the graphical interface never overwrites an existing file. Every result is re-read and checked before it is written.
 - **Runs locally**: nothing is uploaded to the internet. Works on macOS, Windows and Linux.
@@ -89,7 +90,9 @@ The ShibaSlim page opens in your browser:
 3. To check the result first, click **Compare** next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
 
-The desktop app shows the same interface with a few differences: **Compare** opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so there is no **Quit** button.
+The desktop app shows the same interface with a few differences: **Compare** opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so instead of **Quit** there is **Check for updates**. Its window, menus and dialogs also follow the system's language and light or dark appearance.
+
+The desktop app looks for a new version each time it starts. If there is one, it asks; click **Update Now** and it downloads, installs and reopens itself. To check right away, click **Check for updates** at the top right, or on macOS choose **ShibaSlim → Check for Updates…**.
 
 The switches at the top right set the theme (System / Light / Dark) and language (System / 中文 / English). Both follow the system by default and change along with it; a choice you make is remembered, and the comparison page uses it too.
 
@@ -251,7 +254,15 @@ npm run desktop:dev      # open the desktop window in development mode
 npm run desktop:build    # build installers for this system into src-tauri/target/release/bundle/
 ```
 
-Before bundling, `desktop/stage.mjs` runs automatically: it compiles the TypeScript, installs sharp's native library for the target platform, and downloads the same Node.js version from nodejs.org, checking its SHA-256. An Apple silicon Mac can also build the Intel version: `npm run desktop:build -- --target x86_64-apple-darwin` (output in `src-tauri/target/x86_64-apple-darwin/release/bundle/`). After changing `docs/logo.svg`, run `node desktop/icons.mjs` to regenerate the app icons.
+Before bundling, `desktop/stage.mjs` runs automatically: it compiles the TypeScript, installs sharp's native library for the target platform, and downloads the same Node.js version from nodejs.org, checking its SHA-256. An Apple silicon Mac can also build the Intel version: `npm run desktop:build -- --target x86_64-apple-darwin` (output in `src-tauri/target/x86_64-apple-darwin/release/bundle/`). After changing `docs/logo.svg`, run `node desktop/icons.mjs` to regenerate the app icons, and `node desktop/installer-art.mjs` for the installer artwork (the macOS disk image background, the Windows installer's sidebar and header).
+
+**The update signing key**: update bundles must be signed with a private key; the app installs one only after checking it with the public key in `src-tauri/tauri.conf.json`. The private key stays out of the repository and goes to GitHub for Actions to use:
+
+1. Make the key pair (once): `npx tauri signer generate -w ~/.tauri/shibaslim-updater.key`, and put the public key into `plugins.updater.pubkey` in `tauri.conf.json`.
+2. In the repository, open **Settings → Secrets and variables → Actions → New repository secret**, name it `TAURI_SIGNING_PRIVATE_KEY`, and paste the whole private key file (`pbcopy < ~/.tauri/shibaslim-updater.key` copies it). If you set a password for it, add `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` too.
+3. **Back up the private key.** If it is lost, installed apps can no longer verify new versions, and everyone has to download and reinstall by hand.
+
+Without the secret, everything still builds; that version is just not offered as an online update to existing installs. To build update bundles locally: `TAURI_SIGNING_PRIVATE_KEY=~/.tauri/shibaslim-updater.key npm run desktop:build -- --config src-tauri/tauri.updater.conf.json`.
 
 **Releasing a new version**: update the version in `package.json`, commit, and push a tag that starts with `v`:
 
@@ -282,6 +293,8 @@ Every push to `main` (except changes to READMEs or `docs/` only) is also built, 
 | `gui/` | The interface page (HTML, CSS, JS, no build step) |
 | `desktop/engine.mjs` | Entry point of the engine inside the desktop app: starts the local server and talks to the window over stdio |
 | `desktop/stage.mjs` | Prepares the engine files, plus Node.js and sharp for the target platform, before bundling |
-| `src-tauri/` | The desktop app's shell (Rust / Tauri): starts the engine, shows the page, opens comparison windows |
+| `desktop/latest-json.mjs` | Writes the online update manifest, `latest.json`, for each release |
+| `desktop/icons.mjs`, `desktop/installer-art.mjs` | Make the app icons and the installer artwork from the logo |
+| `src-tauri/` | The desktop app's shell (Rust / Tauri): starts the engine, shows the page, opens comparison windows, menu and online updates |
 
 </details>

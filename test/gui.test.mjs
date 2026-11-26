@@ -80,13 +80,27 @@ describe('gui server', () => {
     assert.equal(data.claritySettings[0], null);
   });
 
-  test('tells the page whether it runs in the desktop app', async () => {
-    assert.equal((await call('/api/state')).data.desktop, false);
+  test('tells the page whether it runs in the desktop app, and relays its update checks', async () => {
+    const browser = (await call('/api/state')).data;
+    assert.equal(browser.desktop, false);
+    assert.equal(browser.canUpdate, false);
+    assert.equal((await call('/api/check-update', { method: 'POST' })).status, 404);
+
     const outDir = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
-    const desktop = await startGui({ port: 0, defaultOutDir: outDir, desktop: true });
+    let checks = 0;
+    const desktop = await startGui({ port: 0, defaultOutDir: outDir, desktop: true, appVersion: '1.2.3', onCheckUpdate: () => checks++ });
+    const api = (route, init = {}) =>
+      fetch(`http://127.0.0.1:${desktop.port}${route}`, { ...init, headers: { 'X-Shiba-Token': desktop.token } });
     try {
-      const res = await fetch(`http://127.0.0.1:${desktop.port}/api/state`, { headers: { 'X-Shiba-Token': desktop.token } });
-      assert.equal((await res.json()).desktop, true);
+      const state = await (await api('/api/state')).json();
+      assert.equal(state.desktop, true);
+      assert.equal(state.appVersion, '1.2.3');
+      assert.equal(state.canUpdate, true);
+      assert.equal((await api('/api/check-update', { method: 'POST' })).status, 200);
+      assert.equal(checks, 1);
+      const anonymous = await fetch(`http://127.0.0.1:${desktop.port}/api/check-update`, { method: 'POST' });
+      assert.equal(anonymous.status, 401);
+      assert.equal(checks, 1);
     } finally {
       await desktop.close();
       await rm(outDir, { recursive: true, force: true });

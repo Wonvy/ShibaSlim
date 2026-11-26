@@ -34,6 +34,7 @@
 - **一个清晰度参数**：1–100 一个数字，同时调好分辨率、JPEG 质量和 PNG 减色，不用研究参数。
 - **压缩前后对比**：随机抽几页，左右拖动分界线对比原图和压缩后，可以放大到 4 倍看细节。
 - **桌面版、网页版和命令行**：下载安装包双击就能用，不用装 Node.js，发给别人也只是一个文件；也可以在浏览器里用，或者用命令行批量处理目录。
+- **在线更新**：桌面版启动时会检查有没有新版本，点一下就自动下载、安装并重新打开。
 - **浅色 / 深色，中文 / English**：页面默认跟随系统的主题和语言，也可以在右上角手动切换，选择会被记住。
 - **不会弄丢文件**：默认不动原文件，结果另存为新文件；图形界面从不覆盖已有文件。每次写出前都会重新读取结果校验一遍。
 - **本机运行**：文件不会上传到网络，macOS、Windows、Linux 通用。
@@ -86,7 +87,9 @@ npm install
 3. 想先看效果，就点文件右侧的“对比”，会在新标签页打开对比页面。这一步只是试压，不保存任何文件。
 4. 点“开始压缩”。完成后可以直接“下载”，或者点“显示”在文件夹中找到它。
 
-桌面版和网页版是同一个界面，只有几处不同：“对比”在新窗口里打开；结果已经直接保存在“保存到”的文件夹里，点“显示”就能找到，所以没有“下载”按钮；关掉窗口就是退出，也就没有“退出”按钮。
+桌面版和网页版是同一个界面，只有几处不同：“对比”在新窗口里打开；结果已经直接保存在“保存到”的文件夹里，点“显示”就能找到，所以没有“下载”按钮；关掉窗口就是退出，也就没有“退出”按钮，那个位置换成了“检查更新”。桌面版的窗口、菜单和对话框也跟随系统的语言和深浅色。
+
+桌面版每次启动后会检查一次新版本，有的话会弹出提示，点“现在更新”就会下载、安装并自动重新打开。不想等启动时检查，可以点页面右上角的“检查更新”，macOS 上也可以用菜单 **ShibaSlim → 检查更新…**。
 
 页面右上角可以切换主题（跟随系统 / 浅色 / 深色）和语言（跟随系统 / 中文 / English）。默认都跟随系统，系统设置改变时页面会实时跟着变；手动选择后会被记住，对比页面也会沿用同样的选择。
 
@@ -248,7 +251,15 @@ npm run desktop:dev      # 以开发模式打开桌面窗口
 npm run desktop:build    # 打包当前系统的安装包，输出到 src-tauri/target/release/bundle/
 ```
 
-打包前会自动运行 `desktop/stage.mjs`：编译 TypeScript，按目标平台安装 sharp 的原生库，再从 nodejs.org 下载与当前相同版本的 Node.js 并校验 SHA-256。在 Apple 芯片的 Mac 上也能打 Intel 版：`npm run desktop:build -- --target x86_64-apple-darwin`（输出在 `src-tauri/target/x86_64-apple-darwin/release/bundle/`）。换了 `docs/logo.svg` 后运行 `node desktop/icons.mjs` 重新生成应用图标。
+打包前会自动运行 `desktop/stage.mjs`：编译 TypeScript，按目标平台安装 sharp 的原生库，再从 nodejs.org 下载与当前相同版本的 Node.js 并校验 SHA-256。在 Apple 芯片的 Mac 上也能打 Intel 版：`npm run desktop:build -- --target x86_64-apple-darwin`（输出在 `src-tauri/target/x86_64-apple-darwin/release/bundle/`）。换了 `docs/logo.svg` 后运行 `node desktop/icons.mjs` 重新生成应用图标，运行 `node desktop/installer-art.mjs` 重新生成安装界面的图片（macOS 安装窗口的背景、Windows 安装器的侧边图和横幅）。
+
+**在线更新的签名密钥**：更新包必须用私钥签名，App 用 `src-tauri/tauri.conf.json` 里的公钥验证后才会安装。私钥不进仓库，要放在 GitHub 上让 Actions 使用：
+
+1. 生成密钥（只需一次）：`npx tauri signer generate -w ~/.tauri/shibaslim-updater.key`，并把生成的公钥填进 `tauri.conf.json` 的 `plugins.updater.pubkey`。
+2. 打开仓库的 **Settings → Secrets and variables → Actions → New repository secret**，名字填 `TAURI_SIGNING_PRIVATE_KEY`，内容填私钥文件的全部内容（可以用 `pbcopy < ~/.tauri/shibaslim-updater.key` 复制）。如果生成时设了密码，再加一个 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+3. **备份好私钥**。丢了的话，已经装好的 App 就无法再验证新版本，只能让大家手动下载重装。
+
+没有设置这个密钥时一切照常打包，只是那次的版本不会作为在线更新推送给已经安装的人。本机打一个带更新包的版本：`TAURI_SIGNING_PRIVATE_KEY=~/.tauri/shibaslim-updater.key npm run desktop:build -- --config src-tauri/tauri.updater.conf.json`。
 
 **发布新版本**：改好 `package.json` 里的版本号并提交，然后推送一个 `v` 开头的标签：
 
@@ -279,6 +290,8 @@ GitHub Actions 会在 macOS（Apple 芯片和 Intel）、Windows、Linux 上分�
 | `gui/` | 图形界面的网页（HTML、CSS、JS，无需构建） |
 | `desktop/engine.mjs` | 桌面版里引擎的入口：启动本地服务，通过标准输入输出和窗口通信 |
 | `desktop/stage.mjs` | 打包前准备引擎文件，以及目标平台的 Node.js 和 sharp |
-| `src-tauri/` | 桌面版的窗口外壳（Rust / Tauri）：启动引擎、显示页面、打开对比窗口 |
+| `desktop/latest-json.mjs` | 发布时生成在线更新的清单 `latest.json` |
+| `desktop/icons.mjs`、`desktop/installer-art.mjs` | 从 logo 生成应用图标和安装界面的图片 |
+| `src-tauri/` | 桌面版的窗口外壳（Rust / Tauri）：启动引擎、显示页面、打开对比窗口、菜单和在线更新 |
 
 </details>
