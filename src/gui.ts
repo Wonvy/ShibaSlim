@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
+import { checkSignatureOf, defaultKeyPath, keyFileFingerprint, loadOrCreateKey, resolveAttribution, type SignatureStatus } from './attribution.js';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
 import { DEFAULT_SUFFIX, EXT_RE } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
@@ -35,6 +36,8 @@ export interface GuiOptions {
   onCheckUpdate?: () => void;
   /** Set by the desktop app: it does these natively instead of the server running system commands. */
   shell?: DesktopShell;
+  /** The key that signs attributed results; defaults to this computer's key (created on first use). */
+  keyFile?: string;
 }
 
 export interface DesktopShell {
@@ -67,9 +70,33 @@ interface Entry {
   source: string;
   state: State;
   progress: number;
-  result?: { before: number; after: number; changed: boolean; optimized: number; images: number; clarity: number; outDir: string };
+  result?: {
+    before: number;
+    after: number;
+    changed: boolean;
+    optimized: number;
+    images: number;
+    clarity: number;
+    outDir: string;
+    /** Set when the result was attributed. */
+    author?: string;
+    company?: string;
+    signed?: boolean;
+  };
   output?: string;
   error?: ErrorInfo;
+  /** The ShibaSlim signature the dropped file already carries, if any. */
+  signature?: SignatureView;
+}
+
+interface SignatureView {
+  status: Exclude<SignatureStatus, 'unsigned'>;
+  author: string;
+  company?: string;
+  signedAt: string;
+  fingerprint?: string;
+  /** Signed with this computer's key. */
+  mine: boolean;
 }
 
 /** An error as the page receives it: a message key to translate, plus the Chinese text as a fallback. */
@@ -83,6 +110,7 @@ interface Job {
   id: string;
   clarity: number;
   outDir: string;
+  attribution: { author: string; company: string } | null;
 }
 
 class HttpError extends Error {
@@ -129,6 +157,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   const token = randomBytes(18).toString('base64url');
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'shibaslim-'));
   const fallbackOutDir = options.defaultOutDir ?? defaultOutDir();
+  const keyFile = options.keyFile ?? defaultKeyPath();
   const entries = new Map<string, Entry>();
   const clients = new Set<ServerResponse>();
   const queue: Job[] = [];
@@ -137,6 +166,8 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   const previews = new Map<string, Promise<string>>();
   let running = false;
   let port = 0;
+  /** Signature checks of dropped files run one at a time: each reads the whole file. */
+  let inspecting: Promise<void> = Promise.resolve();
 
   // Index = clarity; the page formats these in its own language.
   const claritySettings = Array.from({ length: 101 }, (_, c) => (c === 0 ? null : settingsForClarity(c)));
@@ -151,6 +182,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     result: e.result,
     output: e.output,
     error: e.error,
+    signature: e.signature,
   });
 
   const broadcast = (event: object) => {
@@ -174,8 +206,10 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         try {
           await mkdir(job.outDir, { recursive: true });
           const output = await claimOutput(entry, job.outDir);
+          const attribution = job.attribution && { ...job.attribution, signingKey: await loadOrCreateKey(keyFile) };
           const report = await optimizeFile(entry.source, output, {
             clarity: job.clarity,
+            ...(attribution ? { attribution } : {}),
             onProgress: ({ done, total }) => {
               entry.progress = total === 0 ? 0.9 : (done / total) * 0.9;
               const now = Date.now();
@@ -238,6 +272,26 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       previews.set(key, pending);
     }
     return pending;
+  }
+
+  /** Shows a dropped file's existing signature, if it has one, next to it in the list. */
+  async function inspect(entry: Entry): Promise<void> {
+    try {
+      const check = await checkSignatureOf(await readFile(entry.source));
+      if (check.status === 'unsigned' || entries.get(entry.id) !== entry) return;
+      const own = check.fingerprint ? await keyFileFingerprint(keyFile).catch(() => null) : null;
+      entry.signature = {
+        status: check.status,
+        author: check.author ?? '',
+        ...(check.company ? { company: check.company } : {}),
+        signedAt: check.signedAt ?? '',
+        ...(check.fingerprint ? { fingerprint: check.fingerprint } : {}),
+        mine: own !== null && own === check.fingerprint,
+      };
+      update(entry);
+    } catch {
+      // A file that cannot be read says so when it is compressed.
+    }
   }
 
   async function removeEntry(id: string): Promise<void> {
@@ -328,6 +382,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       const entry: Entry = { id: entryId, name, rel, size, source, state: 'waiting', progress: 0 };
       entries.set(entryId, entry);
       update(entry);
+      inspecting = inspecting.then(() => inspect(entry));
       return json(res, view(entry));
     }
 
@@ -342,6 +397,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       const clarity = Number(body.clarity);
       if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
       const outDir = validateDir(body.outDir);
+      const attribution = await parseAttribution(body.attribution);
       const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string') : [];
       let queued = 0;
       for (const entryId of ids) {
@@ -350,7 +406,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         entry.state = 'queued';
         entry.progress = 0;
         delete entry.error;
-        queue.push({ id: entryId, clarity, outDir });
+        queue.push({ id: entryId, clarity, outDir, attribution });
         update(entry);
         queued++;
       }
@@ -501,6 +557,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
 }
 
 function summarize(report: OptimizeReport, job: Job): NonNullable<Entry['result']> {
+  const attributed = report.attribution;
   return {
     before: report.before,
     after: report.after,
@@ -509,7 +566,24 @@ function summarize(report: OptimizeReport, job: Job): NonNullable<Entry['result'
     images: report.images.length,
     clarity: job.clarity,
     outDir: job.outDir,
+    ...(attributed ? { author: attributed.author, signed: Boolean(attributed.fingerprint) } : {}),
+    ...(attributed?.company ? { company: attributed.company } : {}),
   };
+}
+
+/** The page sends `attribution: { author, company }` to have results attributed, or null. */
+async function parseAttribution(value: unknown): Promise<Job['attribution']> {
+  if (value === null || value === undefined) return null;
+  const { author, company } = (typeof value === 'object' && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
+  if (typeof author !== 'string' || (company !== undefined && typeof company !== 'string')) throw new HttpError(400, 'error.badRequest');
+  try {
+    // Checks and tidies the names now, so a mistake shows at once rather than on every file.
+    const resolved = await resolveAttribution({ author, ...(company !== undefined ? { company } : {}), signingKey: false });
+    return { author: resolved.author, company: resolved.company };
+  } catch (err) {
+    if (err instanceof SlimError) throw new HttpError(400, err.code, err.params);
+    throw err;
+  }
 }
 
 function json(res: ServerResponse, body: unknown, status = 200): void {

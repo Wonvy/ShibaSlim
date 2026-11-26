@@ -72,3 +72,8 @@ export function escapeAttr(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 }
+
+/** Like escapeAttr, but also keeps tabs and line breaks, which XML would otherwise turn into spaces in an attribute. */
+export function escapeXml(value: string): string {
+  return escapeAttr(value).replace(/[\t\n\r]/g, (c) => `&#${c.charCodeAt(0)};`);
+}

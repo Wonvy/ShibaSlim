@@ -37,6 +37,7 @@
 - **在线更新**：桌面版启动时会检查有没有新版本，点一下就自动下载、安装并重新打开。
 - **浅色 / 深色，中文 / English**：页面默认跟随系统的主题和语言，也可以在右上角手动切换，选择会被记住。
 - **不会弄丢文件**：默认不动原文件，结果另存为新文件；图形界面从不覆盖已有文件。每次写出前都会重新读取结果校验一遍。
+- **可选署名**：把作者和公司写进文件属性，在每页的选择窗格里放一个隐藏的署名对象，并用本机密钥签名；之后随时能校验文件在签名后有没有被改动过。
 - **本机运行**：文件不会上传到网络，macOS、Windows、Linux 通用。
 
 ## 快速开始
@@ -87,6 +88,8 @@ npm install
 3. 想先看效果，就点文件右侧的“对比”，会在新标签页打开对比页面。这一步只是试压，不保存任何文件。
 4. 点“开始压缩”。完成后可以直接“下载”，或者点“显示”在文件夹中找到它。
 
+想在结果里留下作者信息，压缩前勾选“加上署名”，填写作者和公司，见[署名](#署名可选)。
+
 桌面版和网页版是同一个界面，只有几处不同：“对比”会先在后台生成好，再在新窗口里打开；结果已经直接保存在“保存到”的文件夹里，点“显示”就能找到，所以没有“下载”按钮；关掉窗口就是退出，也就没有“退出”按钮，那个位置换成了“检查更新”。桌面版的窗口、菜单和对话框也跟随系统的语言和深浅色。
 
 桌面版每次启动后会检查一次新版本，有的话会弹出提示，点“现在更新”就会下载、安装并自动重新打开。不想等启动时检查，可以点页面右上角的“检查更新”，macOS 上也可以用菜单 **ShibaSlim → 检查更新…**。
@@ -134,6 +137,36 @@ npm install
 > [!TIP]
 > 拿不准用多少时，先用默认的 60 生成对比页面看看，再决定往高调还是往低调。
 
+## 署名（可选）
+
+在界面上勾选“加上署名”并填写作者（公司可选），或者在命令行加 `--author`，压缩结果里会多出三样东西：
+
+| 位置 | 写了什么 | 在哪里能看到 |
+|---|---|---|
+| 文件属性（`docProps/core.xml`、`docProps/app.xml`） | 作者、最后一次保存者、公司 | Windows 右键 → 属性 → 详细信息；PowerPoint“文件 → 信息”；macOS 的 Spotlight（`mdls 文件.pptx`） |
+| 每页的选择窗格（`ppt/slides/*.xml`） | 一个名为 `© 2026 张三 · 公司` 的隐藏空白形状，排在最上面 | PowerPoint“开始 → 排列 → 选择窗格”（<kbd>Alt</kbd>+<kbd>F10</kbd>） |
+| 演示文稿标签（`ppt/tags/*.xml`） | 作者、签名时间、公钥和 Ed25519 签名 | 界面上看不到，用 ShibaSlim 校验 |
+
+署名形状是隐藏的空白形状，放映和打印时都不会出现；动画按形状编号引用对象，不受影响。已经署过名的文件再署一次，会替换原来的署名，不会越加越多。
+
+签名覆盖包里的每一个部件。签名之后文件有任何改动，包括用 PowerPoint 打开再保存一次，签名都会对不上。校验方法：
+
+- **界面**：把文件拖进来，文件名下方会显示“✓ 本机签名有效”“✓ 张三 的签名有效”或“⚠ 张三 签名后被改动过”。
+- **命令行**：`shibaslim verify 汇报.slim.pptx`，全部有效时退出码为 0。
+
+签名用的是本机密钥，第一次署名时自动生成，只有当前用户能读取：
+
+| 系统 | 位置 |
+|---|---|
+| macOS | `~/Library/Application Support/ShibaSlim/signing-key.pem` |
+| Windows | `%APPDATA%\ShibaSlim\signing-key.pem` |
+| Linux | `~/.config/shibaslim/signing-key.pem` |
+
+换电脑时把这个文件一起复制过去，签名才会继续显示为“本机签名”。团队想共用一把密钥，可以用 `--sign-key` 指定，或者设置环境变量 `SHIBASLIM_KEY_FILE`。
+
+> [!IMPORTANT]
+> 署名用来记录，不是保护：PowerPoint 的“检查文档”可以一键清除文件属性和隐藏对象，懂行的人解压后也能删掉标签。签名能证明的是“这份文件签名后没有被改过，签名用的是某一把密钥”，并不能证明签名的人是谁，别人完全可以用自己的密钥另签一份。需要 Office 认可的“已签名”标志时，请在压缩之后再用 PowerPoint 的“保护演示文稿 → 添加数字签名”。
+
 ## 命令行
 
 ```bash
@@ -155,6 +188,12 @@ shibaslim ./课件 -r -o ./课件-压缩版
 
 # 通配符（由工具自己展开，Windows 下也能用）
 shibaslim "*.pptx" -c 40
+
+# 压缩并署名、签名
+shibaslim 汇报.pptx --author 张三 --company 柴犬工作室
+
+# 校验署名：签名后有没有被改动过
+shibaslim verify 汇报.slim.pptx
 ```
 
 扫描目录时会跳过 `~$` 开头的 Office 临时文件，以及之前生成的 `*.slim.*` 文件。
@@ -176,6 +215,10 @@ shibaslim "*.pptx" -c 40
 | `-j, --jobs <n>` | 同时处理的文件数，默认 1 |
 | `-v, --verbose` | 列出每张图片的处理结果 |
 | `--json` | 以 JSON 格式输出结果，方便脚本调用 |
+| `--author <名字>` | 署名并签名，见[署名](#署名可选) |
+| `--company <名称>` | 同时写入文件属性里的公司 |
+| `--sign-key <文件>` | 改用这个 Ed25519 私钥（PEM 格式）签名 |
+| `--no-sign` | 只写署名，不签名 |
 
 以下高级选项会单独覆盖清晰度算出的某一项，一般用不到：
 
@@ -187,7 +230,7 @@ shibaslim "*.pptx" -c 40
 | `--keep-png` | 不把 PNG 转成 JPEG |
 | `--strip-thumbnail` | 删除文件管理器里显示的预览缩略图 |
 
-退出码：全部成功为 `0`，有文件失败为 `1`，参数错误为 `2`。
+退出码：全部成功为 `0`，有文件失败为 `1`，参数错误为 `2`。`shibaslim verify` 在全部签名有效时为 `0`，否则为 `1`；加 `--sign-key <文件>` 可以对照指定的密钥（私钥或公钥）判断是不是它签的。
 
 </details>
 
@@ -205,7 +248,7 @@ pptx 本质上是一个 zip 压缩包，体积大多来自 `ppt/media/` 里的�
 <details>
 <summary><b>不会改动的内容</b></summary>
 
-- 幻灯片本身的 XML，包括文字、版式、动画等
+- 幻灯片本身的 XML，包括文字、版式、动画等（开启署名时，只在每页加一个隐藏的署名形状）
 - 矢量图（EMF、WMF、SVG）、GIF、视频和音频
 - 用了“设置透明色”的图片，因为它依赖精确的像素值，有损压缩会破坏效果
 - 平铺填充的图片只重新编码，不缩小
@@ -223,7 +266,7 @@ pptx 本质上是一个 zip 压缩包，体积大多来自 `ppt/media/` 里的�
 ## 作为库使用
 
 ```js
-import { optimizeFile, optimizeBuffer } from 'shibaslim';
+import { checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
 
 const report = await optimizeFile('in.pptx', 'out.pptx', {
   clarity: 70,
@@ -232,6 +275,10 @@ const report = await optimizeFile('in.pptx', 'out.pptx', {
 console.log(report.before, report.after);
 
 const { output } = await optimizeBuffer(buffer, { clarity: 40 });
+
+// 可选：署名并用本机密钥签名，之后校验
+const signed = await optimizeBuffer(buffer, { attribution: { author: '张三', company: '柴犬工作室' } });
+const check = await checkSignatureOf(signed.output); // check.status: 'valid' | 'modified' | 'invalid' | 'unsigned'
 ```
 
 ## 开发

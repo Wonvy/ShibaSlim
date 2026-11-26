@@ -23,7 +23,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run build && node --test test/optimize.test.mjs test/gui.test.mjs test/i18n.test.mjs test/desktop.test.mjs",
+    "test": "npm run build && node --test test/optimize.test.mjs test/attribution.test.mjs test/gui.test.mjs test/i18n.test.mjs test/desktop.test.mjs",
     "prepare": "npm run build",
     "gui": "npm run build && node dist/cli.js gui",
     "desktop:stage": "npm run build && node desktop/stage.mjs",

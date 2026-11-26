@@ -19,6 +19,10 @@ const el = {
   outDir: document.getElementById('out-dir'),
   pickDir: document.getElementById('pick-dir'),
   openDir: document.getElementById('open-dir'),
+  signOn: document.getElementById('sign-on'),
+  signFields: document.getElementById('sign-fields'),
+  signAuthor: document.getElementById('sign-author'),
+  signCompany: document.getElementById('sign-company'),
   empty: document.getElementById('empty'),
   listHead: document.getElementById('list-head'),
   list: document.getElementById('list'),
@@ -42,6 +46,8 @@ const state = {
   claritySettings: [],
   clarity: 60,
   outDir: '',
+  /** Optional attribution: author and company written into results, which are then signed. */
+  sign: { on: false, author: '', company: '' },
   defaultOutDir: '',
   stopped: false,
   /** Running inside the desktop app rather than a browser tab. */
@@ -136,7 +142,7 @@ function loadSettings() {
 
 function saveSettings() {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ clarity: state.clarity, outDir: state.outDir }));
+    localStorage.setItem(STORE_KEY, JSON.stringify({ clarity: state.clarity, outDir: state.outDir, sign: state.sign }));
   } catch {
     // storage unavailable: settings just won't be remembered
   }
@@ -176,6 +182,26 @@ function renderSettings() {
     button.setAttribute('aria-pressed', String(Number(button.dataset.clarity) === state.clarity));
   }
   if (document.activeElement !== el.outDir) el.outDir.value = state.outDir;
+  el.signOn.checked = state.sign.on;
+  el.signFields.hidden = !state.sign.on;
+  if (document.activeElement !== el.signAuthor) el.signAuthor.value = state.sign.author;
+  if (document.activeElement !== el.signCompany) el.signCompany.value = state.sign.company;
+}
+
+/** One line, trimmed: the server tidies names the same way before writing them. */
+const cleanName = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+
+/** What results get attributed to, or null when attribution is off. */
+function attribution() {
+  if (!state.sign.on) return null;
+  return { author: cleanName(state.sign.author), company: cleanName(state.sign.company) };
+}
+
+function setSign(change) {
+  state.sign = { ...state.sign, ...change };
+  saveSettings();
+  renderSettings();
+  renderAll();
 }
 
 function setClarity(value) {
@@ -197,7 +223,10 @@ function setOutDir(value) {
 function isStale(file) {
   if (file.state !== 'done') return false;
   const sent = state.sentWith.get(file.id);
-  if (file.result && file.result.clarity !== state.clarity) return true;
+  const r = file.result;
+  if (r && r.clarity !== state.clarity) return true;
+  const wanted = attribution();
+  if (r && (wanted ? cleanName(r.author) !== wanted.author || cleanName(r.company) !== wanted.company : Boolean(r.author))) return true;
   return Boolean(sent && sent.outDir !== state.outDir);
 }
 
@@ -231,13 +260,30 @@ function createRow(file) {
   return li;
 }
 
+/** The signature a dropped file already carries, as a suffix for its status line. */
+function signatureText(file) {
+  const sig = file.signature;
+  if (!sig) return '';
+  if (sig.status === 'valid') return t(sig.mine ? 'gui.sig.validMine' : 'gui.sig.valid', { author: sig.author });
+  if (sig.status === 'modified') return t('gui.sig.modified', { author: sig.author });
+  return t('gui.sig.invalid');
+}
+
+function signatureTitle(file) {
+  const sig = file.signature;
+  if (!sig || !sig.fingerprint) return '';
+  const time = sig.signedAt ? new Date(sig.signedAt).toLocaleString(I18N.lang() === 'zh' ? 'zh-CN' : 'en') : '';
+  const author = sig.company ? `${sig.author} · ${sig.company}` : sig.author;
+  return t('gui.sig.title', { author, time, key: sig.fingerprint });
+}
+
 function metaText(file) {
   const size = formatBytes(file.size);
   switch (file.state) {
     case 'uploading':
       return t('gui.meta.uploading', { pct: Math.round(file.progress * 100), size });
     case 'queued':
-      return t('gui.meta.queued', { size });
+      return t('gui.meta.queued', { size }) + signatureText(file);
     case 'running':
       return file.progress >= 0.9
         ? t('gui.meta.packing', { size })
@@ -248,16 +294,17 @@ function metaText(file) {
       const r = file.result;
       if (isStale(file)) return t('gui.meta.stale', { size });
       if (!r.changed) return t('gui.meta.unchanged', { size });
-      return t('gui.meta.done', {
+      const done = t('gui.meta.done', {
         before: formatBytes(r.before),
         after: formatBytes(r.after),
         optimized: r.optimized,
         images: r.images,
         clarity: r.clarity,
       });
+      return r.author ? done + t('gui.meta.signed', { author: r.author }) : done;
     }
     default:
-      return t('gui.meta.waiting', { size });
+      return t('gui.meta.waiting', { size }) + signatureText(file);
   }
 }
 
@@ -271,11 +318,14 @@ function renderRow(file) {
   const name = li.querySelector('.name');
   name.textContent = file.rel || file.name;
   name.title = file.output ? t('gui.savedTo', { path: file.output }) : file.rel || file.name;
-  li.querySelector('.meta').textContent = metaText(file);
+  const meta = li.querySelector('.meta');
+  meta.textContent = metaText(file);
+  meta.title = file.state === 'waiting' || file.state === 'queued' ? signatureTitle(file) : '';
   const progress = file.state === 'running' || file.state === 'uploading' ? file.progress : 0;
   li.querySelector('.bar > span').style.width = `${Math.round(progress * 100)}%`;
-  li.querySelector('.saved').textContent =
-    file.result && file.result.changed && !isStale(file) ? `−${percentSaved(file.result.before, file.result.after)}` : '';
+  // An attributed result can come out a little larger when its images had nothing left to give.
+  const r = file.result;
+  li.querySelector('.saved').textContent = r && r.changed && r.after < r.before && !isStale(file) ? `−${percentSaved(r.before, r.after)}` : '';
   const busy = file.state === 'uploading' || file.state === 'running';
   li.querySelector('[data-act="preview"]').disabled = file.state === 'uploading';
   li.querySelector('[data-act="remove"]').disabled = busy;
@@ -312,6 +362,7 @@ function renderSummary() {
   el.clear.disabled = files.length === 0 || files.every((f) => f.state === 'running' || f.state === 'uploading');
   el.clarity.disabled = active;
   for (const button of el.presets) button.disabled = active;
+  for (const control of [el.signOn, el.signAuthor, el.signCompany]) control.disabled = active;
 }
 
 function renderAll() {
@@ -526,7 +577,13 @@ el.start.addEventListener('click', async () => {
     }
     const ids = files.filter(needsWork).map((f) => f.id);
     if (ids.length === 0) return;
-    await api('/api/compress', { method: 'POST', body: { ids, clarity: state.clarity, outDir: state.outDir } });
+    const signWith = attribution();
+    if (signWith && !signWith.author) {
+      toast(t('gui.sign.needAuthor'));
+      el.signAuthor.focus();
+      return;
+    }
+    await api('/api/compress', { method: 'POST', body: { ids, clarity: state.clarity, outDir: state.outDir, attribution: signWith } });
     for (const id of ids) state.sentWith.set(id, { clarity: state.clarity, outDir: state.outDir });
   } catch (err) {
     toast(errorText(err));
@@ -548,6 +605,12 @@ el.outDir.addEventListener('change', () => setOutDir(el.outDir.value));
 el.outDir.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') el.outDir.blur();
 });
+el.signOn.addEventListener('change', () => {
+  setSign({ on: el.signOn.checked });
+  if (el.signOn.checked && !cleanName(state.sign.author)) el.signAuthor.focus();
+});
+el.signAuthor.addEventListener('input', () => setSign({ author: el.signAuthor.value }));
+el.signCompany.addEventListener('input', () => setSign({ company: el.signCompany.value }));
 
 el.pickDir.addEventListener('click', async () => {
   el.pickDir.disabled = true;
@@ -654,6 +717,12 @@ async function init() {
   const saved = loadSettings();
   state.clarity = Math.min(100, Math.max(1, Math.round(Number(saved.clarity) || data.defaultClarity)));
   state.outDir = typeof saved.outDir === 'string' && saved.outDir ? saved.outDir : data.defaultOutDir;
+  const sign = saved.sign && typeof saved.sign === 'object' ? saved.sign : {};
+  state.sign = {
+    on: sign.on === true,
+    author: typeof sign.author === 'string' ? sign.author : '',
+    company: typeof sign.company === 'string' ? sign.company : '',
+  };
   renderSettings();
   for (const file of data.files) state.files.set(file.id, file);
   renderAll();

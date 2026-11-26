@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { applyAttribution, checkSignature, resolveAttribution, type Attribution, type AttributionResult } from './attribution.js';
 import { IMAGE_EXT, JPEG_EXT, PNG_EXT, optimizeImage, type ImageOutcome, type ImageSettings, type Reason } from './images.js';
 import { t } from './messages.js';
 import { DEFAULT_CLARITY, PRESET_CLARITY, settingsForClarity, type Preset, type PresetName } from './clarity.js';
@@ -18,6 +19,8 @@ export interface OptimizeOptions extends Partial<Preset> {
   keepPng?: boolean;
   /** Drop the preview thumbnail shown by file managers. */
   stripThumbnail?: boolean;
+  /** Also write who made it into the file properties and every slide's selection pane, and sign it. */
+  attribution?: Attribution;
   /** Called as images finish; `done === total` means only repackaging is left. */
   onProgress?: (progress: { done: number; total: number }) => void;
 }
@@ -48,6 +51,8 @@ export interface OptimizeReport {
   duplicatesRemoved: number;
   orphansRemoved: number;
   thumbnailRemoved: boolean;
+  /** Set when attribution was added. */
+  attribution?: AttributionResult;
 }
 
 const MEDIA_RE = /(^|\/)media\/[^/]+$/i;
@@ -97,12 +102,16 @@ export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, ind
   return results;
 }
 
-/** Optimises one presentation held in memory. The result is never larger than the input. */
+/**
+ * Optimises one presentation held in memory. The result is never larger than the input,
+ * unless attribution was asked for: then it is always written, even if only a little larger.
+ */
 export async function optimizeBuffer(
   input: Buffer,
   options: OptimizeOptions = {},
 ): Promise<{ output: Buffer; report: OptimizeReport }> {
   const settings = resolveSettings(options);
+  const attribution = options.attribution ? await resolveAttribution(options.attribution) : null;
   const pkg = await OpcPackage.load(input);
   const danglingBefore = pkg.danglingCount();
 
@@ -120,8 +129,11 @@ export async function optimizeBuffer(
     return result;
   });
 
+  // Last, because the signature covers everything else.
+  const attributed = attribution ? await applyAttribution(pkg, attribution) : undefined;
+
   const output = await pkg.save();
-  await verify(output, danglingBefore, images);
+  await verify(output, danglingBefore, images, Boolean(attributed?.fingerprint));
 
   const report: OptimizeReport = {
     before: input.length,
@@ -131,8 +143,9 @@ export async function optimizeBuffer(
     duplicatesRemoved,
     orphansRemoved,
     thumbnailRemoved,
+    ...(attributed ? { attribution: attributed } : {}),
   };
-  if (output.length >= input.length) {
+  if (!attributed && output.length >= input.length) {
     return { output: input, report: { ...report, after: input.length, changed: false } };
   }
   return { output, report };
@@ -297,7 +310,7 @@ async function processImage(
 }
 
 /** Re-reads the finished package from scratch and refuses to hand out anything inconsistent. */
-async function verify(output: Buffer, danglingBefore: number, images: ImageReport[]): Promise<void> {
+async function verify(output: Buffer, danglingBefore: number, images: ImageReport[], signed: boolean): Promise<void> {
   const check = await OpcPackage.load(output);
   if (check.danglingCount() > danglingBefore) {
     throw new SlimError('error.verifyRefs');
@@ -308,5 +321,8 @@ async function verify(output: Buffer, danglingBefore: number, images: ImageRepor
     if (!check.has(part) || !check.contentType(part)?.startsWith('image/')) {
       throw new SlimError('error.verifyPart', { part });
     }
+  }
+  if (signed && (await checkSignature(check)).status !== 'valid') {
+    throw new SlimError('error.verifySignature');
   }
 }

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import JSZip from 'jszip';
+import { checkSignatureOf, keyFileFingerprint } from '../dist/index.js';
 import { DEFAULT_PORT, startGui } from '../dist/gui.js';
 import { buildFixture } from './fixture.mjs';
 
@@ -15,18 +16,21 @@ describe('gui server', () => {
   let base;
   let outDir;
   let fixture;
+  let keyFile;
   let quitCalls = 0;
 
   before(async () => {
     fixture = await buildFixture();
     outDir = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
-    server = await startGui({ port: 0, defaultOutDir: outDir, onQuit: () => quitCalls++ });
+    keyFile = path.join(await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-')), 'signing-key.pem');
+    server = await startGui({ port: 0, defaultOutDir: outDir, keyFile, onQuit: () => quitCalls++ });
     base = `http://127.0.0.1:${server.port}`;
   });
 
   after(async () => {
     await server.close();
     await rm(outDir, { recursive: true, force: true });
+    await rm(path.dirname(keyFile), { recursive: true, force: true });
   });
 
   const call = async (route, { method = 'GET', body, raw, token = server.token } = {}) => {
@@ -234,6 +238,35 @@ describe('gui server', () => {
     assert.equal(failed.error.code, 'error.notZip');
     assert.match(failed.error.message, /不是有效的 pptx/);
     assert.equal((await waitFor(good.id)).state, 'done');
+  });
+
+  test('attributes results when asked, and shows the signature a dropped file carries', async () => {
+    const { data: entry } = await upload('署名.pptx');
+    const attribution = { author: ' 张三 ', company: '柴犬' };
+    await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir, attribution } });
+    const done = await waitFor(entry.id);
+    assert.equal(done.state, 'done', JSON.stringify(done.error));
+    assert.deepEqual([done.result.author, done.result.company, done.result.signed], ['张三', '柴犬', true]);
+    const check = await checkSignatureOf(await readFile(done.output));
+    assert.equal(check.status, 'valid');
+    assert.equal(check.fingerprint, await keyFileFingerprint(keyFile), 'signed with the key the app was given');
+
+    // Dropping the result back in shows its signature; the original has none.
+    assert.equal(done.signature, undefined);
+    const { data: back } = await upload('back.pptx', undefined, await readFile(done.output));
+    const deadline = Date.now() + 10000;
+    let seen;
+    while (!(seen = (await call('/api/state')).data.files.find((f) => f.id === back.id))?.signature) {
+      assert.ok(Date.now() < deadline, 'the signature check did not report');
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.deepEqual(seen.signature, { status: 'valid', author: '张三', company: '柴犬', signedAt: check.signedAt, fingerprint: check.fingerprint, mine: true });
+
+    const missing = await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir, attribution: { author: '  ' } } });
+    assert.equal(missing.status, 400);
+    assert.equal(missing.data.code, 'error.authorMissing');
+    const malformed = await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir, attribution: { author: 5 } } });
+    assert.equal(malformed.status, 400);
   });
 
   test('builds a comparison page titled with the original file name', async () => {

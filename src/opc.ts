@@ -18,7 +18,8 @@ export class SlimError extends Error {
 
 const CONTENT_TYPES = '[Content_Types].xml';
 const RELS_RE = /^(?:(.*)\/)?_rels\/([^/]*)\.rels$/i;
-const XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
+const RELS_TYPE = 'application/vnd.openxmlformats-package.relationships+xml';
+export const XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n';
 /** Entry types worth re-deflating at the highest level even when their content is unchanged. */
 const RECOMPRESS_EXT = new Set(['xml', 'rels', 'vml', 'emf', 'wmf', 'svg']);
 
@@ -156,6 +157,31 @@ export class OpcPackage {
     file.dirty = true;
   }
 
+  /** The relationships of `source` ('' for the package root), if it has any. */
+  relsOf(source: string): RelsFile | undefined {
+    return this.relsFiles.find((f) => f.source === source);
+  }
+
+  /** Adds a relationship from `source` ('' for the package root) to `part` and returns its id. */
+  addRel(source: string, type: string, part: string): string {
+    let file = this.relsOf(source);
+    if (!file) {
+      const slash = source.lastIndexOf('/');
+      const baseDir = slash < 0 ? '' : source.slice(0, slash);
+      const path = `${baseDir ? baseDir + '/' : ''}_rels/${source.slice(slash + 1)}.rels`;
+      file = { path, baseDir, source, rels: [], dirty: true };
+      this.relsFiles.push(file);
+      this.setContentType(path, RELS_TYPE);
+    }
+    const taken = new Set(file.rels.map((r) => r.id));
+    let n = file.rels.length + 1;
+    while (taken.has(`rId${n}`)) n++;
+    const id = `rId${n}`;
+    file.rels.push({ id, type, target: posix.relative('/' + file.baseDir, '/' + part), external: false, part });
+    file.dirty = true;
+    return id;
+  }
+
   referencedParts(): Set<string> {
     const parts = new Set<string>();
     for (const file of this.relsFiles) {
@@ -221,7 +247,8 @@ export class OpcPackage {
     this.typesDirty = true;
   }
 
-  async save(): Promise<Buffer> {
+  /** Writes pending relationship and content-type changes, so every part reads back as it will be saved. */
+  flush(): void {
     for (const file of this.relsFiles) {
       if (!file.dirty) continue;
       this.write(file.path, Buffer.from(serializeRels(file), 'utf8'));
@@ -231,6 +258,10 @@ export class OpcPackage {
       this.write(CONTENT_TYPES, Buffer.from(this.serializeContentTypes(), 'utf8'));
       this.typesDirty = false;
     }
+  }
+
+  async save(): Promise<Buffer> {
+    this.flush();
     // JSZip passes untouched deflated entries through byte-for-byte, so the
     // ones worth squeezing harder have to be handed back as raw data.
     for (const name of this.names()) {

@@ -40,6 +40,7 @@
 - **Online updates**: the desktop app looks for a new version when it starts; one click downloads it, installs it and reopens the app.
 - **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
 - **Your files are safe**: originals are left alone by default and results are saved as new files; the graphical interface never overwrites an existing file. Every result is re-read and checked before it is written.
+- **Optional attribution**: writes the author and company into the file properties, puts a hidden attribution object in every slide's selection pane, and signs the result with this computer's key, so you can later check whether a file changed after signing.
 - **Runs locally**: nothing is uploaded to the internet. Works on macOS, Windows and Linux.
 
 ## Quick start
@@ -90,6 +91,8 @@ The ShibaSlim page opens in your browser:
 3. To check the result first, click **Compare** next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
 
+To leave your name in the results, tick **Add attribution** and enter an author and company before you start; see [Attribution](#attribution-optional).
+
 The desktop app shows the same interface with a few differences: **Compare** is built in the background first and then opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so instead of **Quit** there is **Check for updates**. Its window, menus and dialogs also follow the system's language and light or dark appearance.
 
 The desktop app looks for a new version each time it starts. If there is one, it asks; click **Update Now** and it downloads, installs and reopens itself. To check right away, click **Check for updates** at the top right, or on macOS choose **ShibaSlim → Check for Updates…**.
@@ -137,6 +140,36 @@ Values in between are interpolated linearly, and from 85 up PNG is always lossle
 > [!TIP]
 > Not sure what to pick? Generate a comparison page at the default of 60, then go up or down from there.
 
+## Attribution (optional)
+
+Tick **Add attribution** in the interface and enter an author (the company is optional), or pass `--author` on the command line, and each result gains three things:
+
+| Where | What | Where you see it |
+|---|---|---|
+| File properties (`docProps/core.xml`, `docProps/app.xml`) | Author, last saved by, company | Windows: right-click → Properties → Details; PowerPoint: File → Info; macOS Spotlight (`mdls file.pptx`) |
+| Every slide's selection pane (`ppt/slides/*.xml`) | A hidden, empty shape named `© 2026 Jane Doe · Company`, listed first | PowerPoint: Home → Arrange → Selection Pane (<kbd>Alt</kbd>+<kbd>F10</kbd>) |
+| Presentation tags (`ppt/tags/*.xml`) | Author, time of signing, public key and an Ed25519 signature | Not shown anywhere; checked with ShibaSlim |
+
+The attribution shape is hidden and empty, so it never appears in a slide show or a printout, and animations refer to shapes by number, so they are unaffected. Attributing a file again replaces the earlier attribution rather than adding another.
+
+The signature covers every part of the package. Any change after signing, including opening the file in PowerPoint and saving it again, makes it stop matching. To check a file:
+
+- **Interface**: drop it in; under its name you see "✓ signed on this computer", "✓ signed by Jane Doe, unchanged" or "⚠ signed by Jane Doe, changed since".
+- **Command line**: `shibaslim verify report.slim.pptx` exits with 0 when every signature holds.
+
+Files are signed with this computer's key, created the first time you attribute something and readable only by you:
+
+| System | Location |
+|---|---|
+| macOS | `~/Library/Application Support/ShibaSlim/signing-key.pem` |
+| Windows | `%APPDATA%\ShibaSlim\signing-key.pem` |
+| Linux | `~/.config/shibaslim/signing-key.pem` |
+
+Copy this file along when you move to another computer, so your signatures still show as your own. A team can share one key with `--sign-key` or the `SHIBASLIM_KEY_FILE` environment variable.
+
+> [!IMPORTANT]
+> Attribution records; it does not protect. PowerPoint's Inspect Document removes file properties and hidden objects in one click, and anyone who unzips the file can delete the tags. A valid signature shows that the file has not changed since it was signed with a particular key, not who signed it: anyone can sign a copy with a key of their own. If you need the "signed" status that Office itself recognises, add a digital signature in PowerPoint (Protect Presentation → Add a Digital Signature) after compressing.
+
 ## Command line
 
 ```bash
@@ -158,6 +191,12 @@ shibaslim ./slides -r -o ./slides-compressed
 
 # Glob patterns (expanded by the tool itself, so they work on Windows too)
 shibaslim "*.pptx" -c 40
+
+# Compress, attribute and sign
+shibaslim report.pptx --author "Jane Doe" --company "Shiba Studio"
+
+# Check the signature: has the file changed since it was signed?
+shibaslim verify report.slim.pptx
 ```
 
 When scanning folders, Office lock files starting with `~$` and earlier `*.slim.*` outputs are skipped.
@@ -179,6 +218,10 @@ When scanning folders, Office lock files starting with `~$` and earlier `*.slim.
 | `-j, --jobs <n>` | Files processed at once, default 1 |
 | `-v, --verbose` | List what happened to each image |
 | `--json` | Print results as JSON for scripts |
+| `--author <name>` | Attribute and sign; see [Attribution](#attribution-optional) |
+| `--company <name>` | Also write the company into the file properties |
+| `--sign-key <file>` | Sign with this Ed25519 private key (PEM) instead |
+| `--no-sign` | Attribute without signing |
 
 Advanced options override one value derived from the clarity; you will rarely need them:
 
@@ -190,7 +233,7 @@ Advanced options override one value derived from the clarity; you will rarely ne
 | `--keep-png` | Never convert PNG to JPEG |
 | `--strip-thumbnail` | Remove the preview thumbnail shown by file managers |
 
-Exit codes: `0` when everything succeeded, `1` when a file failed, `2` for invalid arguments.
+Exit codes: `0` when everything succeeded, `1` when a file failed, `2` for invalid arguments. `shibaslim verify` exits with `0` when every signature holds and `1` otherwise; with `--sign-key <file>` it tells whether that key (private or public) made each signature.
 
 </details>
 
@@ -208,7 +251,7 @@ When an image changes format its extension changes too, so every `.rels` referen
 <details>
 <summary><b>What is never changed</b></summary>
 
-- The slide XML itself: text, layout, animations and so on
+- The slide XML itself: text, layout, animations and so on (with attribution on, only a hidden attribution shape is added to each slide)
 - Vector images (EMF, WMF, SVG), GIFs, video and audio
 - Images that use "Set Transparent Color", which relies on exact pixel values that lossy compression would break
 - Tiled image fills are re-encoded but not downsampled
@@ -226,7 +269,7 @@ When an image changes format its extension changes too, so every `.rels` referen
 ## Use as a library
 
 ```js
-import { optimizeFile, optimizeBuffer } from 'shibaslim';
+import { checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
 
 const report = await optimizeFile('in.pptx', 'out.pptx', {
   clarity: 70,
@@ -235,6 +278,10 @@ const report = await optimizeFile('in.pptx', 'out.pptx', {
 console.log(report.before, report.after);
 
 const { output } = await optimizeBuffer(buffer, { clarity: 40 });
+
+// Optional: attribute and sign with this computer's key, then check it
+const signed = await optimizeBuffer(buffer, { attribution: { author: 'Jane Doe', company: 'Shiba Studio' } });
+const check = await checkSignatureOf(signed.output); // check.status: 'valid' | 'modified' | 'invalid' | 'unsigned'
 ```
 
 ## Development

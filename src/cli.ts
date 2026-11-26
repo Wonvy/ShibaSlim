@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { checkSignatureOf, defaultKeyPath, fingerprint, keyFileFingerprint, resolveAttribution, type SignatureCheck } from './attribution.js';
 import { describeSettings, formatBytes, percentSaved } from './format.js';
 import { defaultOutDir, openWithSystem, startGui } from './gui.js';
 import { DEFAULT_SUFFIX, collectInputs, outputPathFor, previewPathFor } from './inputs.js';
@@ -23,11 +25,13 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
 用法:
   shibaslim <文件|目录|通配符 ...> [选项]
   shibaslim gui [--port <端口>] [--no-browser]   打开图形界面（在浏览器里拖入文件）
+  shibaslim verify <文件|目录 ...> [-r]          校验署名：签名后文件有没有被改动过
 
 示例:
   shibaslim 汇报.pptx                      生成 汇报.slim.pptx
   shibaslim 汇报.pptx -c 40 -n --preview   试试清晰度 40：只生成对比页面，不写 pptx
   shibaslim ./课件 -r -o ./课件-压缩版      递归处理整个目录，输出到另一个目录
+  shibaslim 汇报.pptx --author 张三         压缩并署名、签名
 
 清晰度:
   -c, --clarity <1-100>   数值越高越清晰、文件越大，默认 ${DEFAULT_CLARITY}
@@ -43,6 +47,14 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
       --suffix <后缀>     输出文件名后缀，默认 .slim；指定 --out-dir 时默认不加
       --in-place          直接覆盖原文件（有损且不可恢复，请先备份）
   -n, --dry-run           只报告能省多少，不写 pptx（--preview 的页面照常生成）
+
+署名（可选）:
+      --author <名字>     写入作者：文件属性里的作者和最后保存者、每页选择窗格里的
+                          隐藏署名，并用本机密钥签名（首次使用时自动生成）
+      --company <名称>    同时写入文件属性里的公司
+      --sign-key <文件>   改用这个 Ed25519 私钥（PEM 格式）签名
+      --no-sign           只写署名，不签名
+                          本机密钥保存在 ${defaultKeyPath()}
 
 高级（单独覆盖清晰度算出的某一项）:
       --ppi <数值>        图片按显示尺寸保留的像素密度
@@ -91,7 +103,90 @@ function describe(report: OptimizeReport): string {
   if (report.duplicatesRemoved > 0) parts.push(`去重 ${report.duplicatesRemoved}`);
   if (report.orphansRemoved > 0) parts.push(`清理无用媒体 ${report.orphansRemoved}`);
   if (report.thumbnailRemoved) parts.push('已删缩略图');
+  if (report.attribution) parts.push(report.attribution.fingerprint ? '已署名并签名' : '已署名');
   return parts.join('，');
+}
+
+const pad = (n: number) => String(n).padStart(2, '0');
+
+function localTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function verifyLine(label: string, check: SignatureCheck, mine: boolean): string {
+  const who = [check.author, check.company].filter(Boolean).join(' · ');
+  const key = check.fingerprint ? (mine ? '本机密钥' : `密钥 ${check.fingerprint}`) : '';
+  const detail = dim([who && `署名 ${who}`, check.signedAt && `签于 ${localTime(check.signedAt)}`, key].filter(Boolean).join(' · '));
+  switch (check.status) {
+    case 'valid':
+      return `${green(MARK.ok)} ${label}  ${green('签名有效，签名后没有改动')}  ${detail}`;
+    case 'modified':
+      return `${red(MARK.fail)} ${label}  ${red('签名后被改动过')}  ${detail}`;
+    case 'invalid':
+      return `${red(MARK.fail)} ${label}  ${red('签名数据已损坏')}  ${detail}`;
+    default:
+      return `${dim('-')} ${label}  没有 ShibaSlim 签名`;
+  }
+}
+
+const VERIFY_HELP = `用法: shibaslim verify <文件|目录|通配符 ...> [选项]
+
+校验 ShibaSlim 写入的署名签名，看文件在签名后有没有被改动过（用 PowerPoint 再保存一次也算改动）。
+全部签名有效时退出码为 0，否则为 1。
+
+选项:
+  -r, --recursive         递归处理子目录
+      --sign-key <文件>   判断是否由这把密钥签名（私钥或公钥 PEM），默认对照本机密钥
+      --json              以 JSON 输出结果
+  -h, --help              显示帮助
+
+本机密钥保存在 ${defaultKeyPath()}`;
+
+async function runVerify(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      recursive: { type: 'boolean', short: 'r' },
+      'sign-key': { type: 'string' },
+      json: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  });
+  if (values.help || positionals.length === 0) {
+    console.log(VERIFY_HELP);
+    return values.help ? 0 : 2;
+  }
+  const keyFile = values['sign-key'];
+  const own = await keyFileFingerprint(keyFile === undefined ? defaultKeyPath() : path.resolve(keyFile));
+  if (keyFile !== undefined && own === null) throw new SlimError('error.signKeyMissing', { path: keyFile });
+
+  const human = !values.json;
+  const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, '', undefined);
+  for (const arg of unmatched) console.error(red(`找不到匹配的文件：${arg}`));
+  if (items.length === 0) {
+    console.error('没有可校验的 pptx 文件。');
+    return 1;
+  }
+
+  const results: Array<{ file: string; mine?: boolean; error?: string } & Partial<SignatureCheck>> = [];
+  for (const item of items) {
+    const label = path.relative(process.cwd(), item.file) || item.file;
+    try {
+      const check = await checkSignatureOf(await readFile(item.file));
+      const mine = own !== null && check.fingerprint === own;
+      results.push({ file: item.file, ...check, ...(check.fingerprint ? { mine } : {}) });
+      if (human) console.log(verifyLine(label, check, mine));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({ file: item.file, error: message });
+      if (human) console.log(`${red(MARK.fail)} ${label}  ${red(message)}`);
+    }
+  }
+  if (!human) console.log(JSON.stringify(results, null, 2));
+  return unmatched.length === 0 && results.every((r) => r.status === 'valid') ? 0 : 1;
 }
 
 function imageLines(report: OptimizeReport): string[] {
@@ -149,6 +244,7 @@ async function runGui(argv: string[]): Promise<number> {
 
 async function main(): Promise<number> {
   if (process.argv[2] === 'gui') return runGui(process.argv.slice(3));
+  if (process.argv[2] === 'verify') return runVerify(process.argv.slice(3));
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -161,6 +257,10 @@ async function main(): Promise<number> {
       'png-quality': { type: 'string' },
       'keep-png': { type: 'boolean' },
       'strip-thumbnail': { type: 'boolean' },
+      author: { type: 'string' },
+      company: { type: 'string' },
+      'sign-key': { type: 'string' },
+      'no-sign': { type: 'boolean' },
       'out-dir': { type: 'string', short: 'o' },
       suffix: { type: 'string' },
       'in-place': { type: 'boolean' },
@@ -217,6 +317,24 @@ async function main(): Promise<number> {
   if (values['strip-thumbnail']) options.stripThumbnail = true;
   const settings = resolveSettings(options);
 
+  const noSign = values['no-sign'] ?? false;
+  if (values.author === undefined && (values.company !== undefined || values['sign-key'] !== undefined || noSign)) {
+    throw new UsageError('--company、--sign-key 和 --no-sign 需要和 --author 一起使用');
+  }
+  if (noSign && values['sign-key'] !== undefined) throw new UsageError('--sign-key 和 --no-sign 不能同时使用');
+  // Resolved once, so the key is read (or created) before the files are processed side by side.
+  const attribution =
+    values.author === undefined
+      ? null
+      : await resolveAttribution({
+          author: values.author,
+          ...(values.company !== undefined ? { company: values.company } : {}),
+          signingKey: noSign ? false : (values['sign-key'] ?? undefined),
+        });
+  if (attribution) {
+    options.attribution = { author: attribution.author, company: attribution.company, signingKey: attribution.key ?? false };
+  }
+
   const human = !values.json;
   // Even when --out-dir drops the suffix, .slim files left by earlier runs are outputs, not inputs.
   const skipSuffix = inPlace ? '' : suffix || DEFAULT_SUFFIX;
@@ -230,6 +348,10 @@ async function main(): Promise<number> {
   if (human) {
     const note = dryRun ? '（试运行，不写 pptx）' : '';
     console.log(dim(`清晰度 ${settings.clarity}（${describeSettings(settings)}）${note}`));
+    if (attribution) {
+      const who = attribution.company ? `${attribution.author}（${attribution.company}）` : attribution.author;
+      console.log(dim(`署名 ${who} · ${attribution.key ? `签名密钥 ${fingerprint(attribution.key)}` : '不签名'}`));
+    }
   }
 
   const showStatus = human && useColor && jobs === 1;
@@ -252,7 +374,12 @@ async function main(): Promise<number> {
         const detail = dim(`（${describe(report)}）`);
         if (report.changed) {
           const sizes = `${formatBytes(report.before)} → ${formatBytes(report.after)}`;
-          console.log(`${green(MARK.ok)} ${label}  ${sizes}  ${green('-' + percentSaved(report.before, report.after))} ${detail}`);
+          // Attribution is written even when the images had nothing left to give, which can add a little.
+          const delta =
+            report.after < report.before
+              ? green('-' + percentSaved(report.before, report.after))
+              : dim('+' + formatBytes(report.after - report.before));
+          console.log(`${green(MARK.ok)} ${label}  ${sizes}  ${delta} ${detail}`);
         } else {
           console.log(`${dim('-')} ${label}  ${formatBytes(report.before)}  已无压缩空间 ${detail}`);
         }
@@ -274,10 +401,11 @@ async function main(): Promise<number> {
     const before = done.reduce((sum, r) => sum + r.report!.before, 0);
     const after = done.reduce((sum, r) => sum + r.report!.after, 0);
     const failNote = failed > 0 ? red(`，${failed} 个失败`) : '';
-    console.log(
-      `\n共 ${results.length} 个文件${failNote}：${formatBytes(before)} → ${formatBytes(after)}，` +
-        `${dryRun ? '可节省' : '节省'} ${formatBytes(before - after)}（${percentSaved(before, after)}）`,
-    );
+    const saving =
+      after < before
+        ? `${dryRun ? '可节省' : '节省'} ${formatBytes(before - after)}（${percentSaved(before, after)}）`
+        : `增加 ${formatBytes(after - before)}（署名）`;
+    console.log(`\n共 ${results.length} 个文件${failNote}：${formatBytes(before)} → ${formatBytes(after)}，${saving}`);
   } else {
     console.log(JSON.stringify(results, null, 2));
   }
