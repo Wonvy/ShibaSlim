@@ -262,6 +262,21 @@ describe('gui server', () => {
     }
     assert.deepEqual(seen.signature, { status: 'valid', author: '张三', company: '柴犬', signedAt: check.signedAt, fingerprint: check.fingerprint, mine: true });
 
+    // Attribution only: the result is named .signed and its media are the source's, byte for byte.
+    await call('/api/compress', { method: 'POST', body: { ids: [back.id], clarity: 30, outDir, attribution, signOnly: true } });
+    const signed = await waitFor(back.id);
+    assert.equal(signed.state, 'done', JSON.stringify(signed.error));
+    assert.equal(signed.output, path.join(outDir, 'back.signed.pptx'));
+    assert.equal(signed.result.signOnly, true);
+    const source = await JSZip.loadAsync(await readFile(done.output));
+    const result = await JSZip.loadAsync(await readFile(signed.output));
+    for (const name of Object.keys(source.files).filter((n) => n.startsWith('ppt/media/') && !source.files[n].dir)) {
+      assert.ok((await source.file(name).async('nodebuffer')).equals(await result.file(name).async('nodebuffer')), name);
+    }
+    assert.equal((await checkSignatureOf(await readFile(signed.output))).status, 'valid');
+    const noAuthor = await call('/api/compress', { method: 'POST', body: { ids: [back.id], clarity: 60, outDir, signOnly: true } });
+    assert.equal(noAuthor.status, 400);
+
     const missing = await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir, attribution: { author: '  ' } } });
     assert.equal(missing.status, 400);
     assert.equal(missing.data.code, 'error.authorMissing');

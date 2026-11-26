@@ -10,10 +10,10 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { checkSignatureOf, defaultKeyPath, keyFileFingerprint, loadOrCreateKey, resolveAttribution, type SignatureStatus } from './attribution.js';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
-import { DEFAULT_SUFFIX, EXT_RE } from './inputs.js';
+import { DEFAULT_SUFFIX, EXT_RE, SIGNED_SUFFIX } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
 import { SlimError } from './opc.js';
-import { optimizeFile, type OptimizeReport } from './optimize.js';
+import { attributeFile, optimizeFile, type AttributeReport, type OptimizeReport } from './optimize.js';
 
 /** A fixed port keeps the page's address stable, so its saved settings survive restarts. */
 export const DEFAULT_PORT = 51735;
@@ -82,6 +82,8 @@ interface Entry {
     author?: string;
     company?: string;
     signed?: boolean;
+    /** Only attributed: the images were left as they were. */
+    signOnly?: boolean;
   };
   output?: string;
   error?: ErrorInfo;
@@ -111,6 +113,8 @@ interface Job {
   clarity: number;
   outDir: string;
   attribution: { author: string; company: string } | null;
+  /** Attribute only, without compressing; always comes with an attribution. */
+  signOnly: boolean;
 }
 
 class HttpError extends Error {
@@ -205,24 +209,28 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         let lastSent = 0;
         try {
           await mkdir(job.outDir, { recursive: true });
-          const output = await claimOutput(entry, job.outDir);
+          const output = await claimOutput(entry, job.outDir, job.signOnly ? SIGNED_SUFFIX : DEFAULT_SUFFIX);
           const attribution = job.attribution && { ...job.attribution, signingKey: await loadOrCreateKey(keyFile) };
-          const report = await optimizeFile(entry.source, output, {
-            clarity: job.clarity,
-            ...(attribution ? { attribution } : {}),
-            onProgress: ({ done, total }) => {
-              entry.progress = total === 0 ? 0.9 : (done / total) * 0.9;
-              const now = Date.now();
-              if (now - lastSent > 150 || done === total) {
-                lastSent = now;
-                update(entry);
-              }
-            },
-          });
+          if (job.signOnly && attribution) {
+            entry.result = summarizeSigned(await attributeFile(entry.source, output, attribution), job);
+          } else {
+            const report = await optimizeFile(entry.source, output, {
+              clarity: job.clarity,
+              ...(attribution ? { attribution } : {}),
+              onProgress: ({ done, total }) => {
+                entry.progress = total === 0 ? 0.9 : (done / total) * 0.9;
+                const now = Date.now();
+                if (now - lastSent > 150 || done === total) {
+                  lastSent = now;
+                  update(entry);
+                }
+              },
+            });
+            entry.result = summarize(report, job);
+          }
           entry.state = 'done';
           entry.progress = 1;
           entry.output = output;
-          entry.result = summarize(report, job);
         } catch (err) {
           entry.state = 'error';
           entry.error = errorInfo(err);
@@ -235,14 +243,15 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   }
 
   /**
-   * Picks the output file for an entry: its name with .slim added (汇报.pptx -> 汇报.slim.pptx), so a
-   * result can never be mistaken for its original, and never a file this session did not write.
+   * Picks the output file for an entry: its name with .slim added (汇报.pptx -> 汇报.slim.pptx), or
+   * .signed when it is only attributed, so a result can never be mistaken for its original, and
+   * never a file this session did not write.
    */
-  async function claimOutput(entry: Entry, outDir: string): Promise<string> {
+  async function claimOutput(entry: Entry, outDir: string, suffix: string): Promise<string> {
     const desired = path.join(outDir, ...entry.rel.split('/'));
     if (!isInsideOrEqual(outDir, desired)) throw new HttpError(400, 'error.badPath');
     const { dir, name, ext } = path.parse(desired);
-    const base = name.endsWith(DEFAULT_SUFFIX) ? name : name + DEFAULT_SUFFIX;
+    const base = name.endsWith(suffix) ? name : name + suffix;
     for (let i = 1; ; i++) {
       const candidate = path.join(dir, i === 1 ? `${base}${ext}` : `${base} (${i})${ext}`);
       const owner = written.get(candidate);
@@ -398,6 +407,8 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
       const outDir = validateDir(body.outDir);
       const attribution = await parseAttribution(body.attribution);
+      const signOnly = body.signOnly === true;
+      if (signOnly && !attribution) throw new HttpError(400, 'error.authorMissing');
       const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string') : [];
       let queued = 0;
       for (const entryId of ids) {
@@ -406,7 +417,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         entry.state = 'queued';
         entry.progress = 0;
         delete entry.error;
-        queue.push({ id: entryId, clarity, outDir, attribution });
+        queue.push({ id: entryId, clarity, outDir, attribution, signOnly });
         update(entry);
         queued++;
       }
@@ -568,6 +579,23 @@ function summarize(report: OptimizeReport, job: Job): NonNullable<Entry['result'
     outDir: job.outDir,
     ...(attributed ? { author: attributed.author, signed: Boolean(attributed.fingerprint) } : {}),
     ...(attributed?.company ? { company: attributed.company } : {}),
+  };
+}
+
+function summarizeSigned(report: AttributeReport, job: Job): NonNullable<Entry['result']> {
+  const { attribution } = report;
+  return {
+    before: report.before,
+    after: report.after,
+    changed: true,
+    optimized: 0,
+    images: 0,
+    clarity: job.clarity,
+    outDir: job.outDir,
+    author: attribution.author,
+    ...(attribution.company ? { company: attribution.company } : {}),
+    signed: Boolean(attribution.fingerprint),
+    signOnly: true,
   };
 }
 

@@ -80,9 +80,13 @@
 
     <div class="field sign">
       <label class="check" for="sign-on"><input type="checkbox" id="sign-on"><span data-t="gui.sign.toggle"></span></label>
-      <div class="sign-row" id="sign-fields" hidden>
-        <label class="sub" for="sign-author"><span data-t="gui.sign.author"></span><input type="text" id="sign-author" maxlength="200" spellcheck="false" autocomplete="name"></label>
-        <label class="sub" for="sign-company"><span data-t="gui.sign.company"></span><input type="text" id="sign-company" maxlength="200" spellcheck="false" autocomplete="organization"></label>
+      <div id="sign-fields" hidden>
+        <div class="sign-row">
+          <label class="sub" for="sign-author"><span data-t="gui.sign.author"></span><input type="text" id="sign-author" maxlength="200" spellcheck="false" autocomplete="name"></label>
+          <label class="sub" for="sign-company"><span data-t="gui.sign.company"></span><input type="text" id="sign-company" maxlength="200" spellcheck="false" autocomplete="organization"></label>
+        </div>
+        <label class="check minor" for="sign-only"><input type="checkbox" id="sign-only"><span data-t="gui.sign.only"></span></label>
+        <p class="hint" id="sign-only-hint" data-t="gui.sign.onlyHint" hidden></p>
       </div>
       <p class="hint" data-t="gui.sign.hint"></p>
     </div>

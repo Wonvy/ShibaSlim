@@ -149,6 +149,8 @@ npm install
 
 署名形状是隐藏的空白形状，放映和打印时都不会出现；动画按形状编号引用对象，不受影响。已经署过名的文件再署一次，会替换原来的署名，不会越加越多。
 
+已经压缩过的文件不必再压一遍：界面里勾选“只署名，不压缩图片”，或者用 `shibaslim sign`。图片和其他媒体原样保留，只写入上面三样，结果文件名加上 `.signed`（如 `汇报.slim.signed.pptx`）。
+
 签名覆盖包里的每一个部件。签名之后文件有任何改动，包括用 PowerPoint 打开再保存一次，签名都会对不上。校验方法：
 
 - **界面**：把文件拖进来，文件名下方会显示“✓ 本机签名有效”“✓ 张三 的签名有效”或“⚠ 张三 签名后被改动过”。
@@ -192,6 +194,9 @@ shibaslim "*.pptx" -c 40
 # 压缩并署名、签名
 shibaslim 汇报.pptx --author 张三 --company 柴犬工作室
 
+# 已经压缩过的文件只署名，不再压缩图片（生成 汇报.slim.signed.pptx）
+shibaslim sign 汇报.slim.pptx --author 张三
+
 # 校验署名：签名后有没有被改动过
 shibaslim verify 汇报.slim.pptx
 ```
@@ -230,7 +235,7 @@ shibaslim verify 汇报.slim.pptx
 | `--keep-png` | 不把 PNG 转成 JPEG |
 | `--strip-thumbnail` | 删除文件管理器里显示的预览缩略图 |
 
-退出码：全部成功为 `0`，有文件失败为 `1`，参数错误为 `2`。`shibaslim verify` 在全部签名有效时为 `0`，否则为 `1`；加 `--sign-key <文件>` 可以对照指定的密钥（私钥或公钥）判断是不是它签的。
+退出码：全部成功为 `0`，有文件失败为 `1`，参数错误为 `2`。`shibaslim sign` 支持 `--author`（必填）、`--company`、`--sign-key`、`--no-sign`、`-o`、`--suffix`（默认 `.signed`）、`--in-place`、`-r`、`-j` 和 `--json`。`shibaslim verify` 在全部签名有效时为 `0`，否则为 `1`；加 `--sign-key <文件>` 可以对照指定的密钥（私钥或公钥）判断是不是它签的。
 
 </details>
 
@@ -266,7 +271,7 @@ pptx 本质上是一个 zip 压缩包，体积大多来自 `ppt/media/` 里的�
 ## 作为库使用
 
 ```js
-import { checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
+import { attributeFile, checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
 
 const report = await optimizeFile('in.pptx', 'out.pptx', {
   clarity: 70,
@@ -279,6 +284,9 @@ const { output } = await optimizeBuffer(buffer, { clarity: 40 });
 // 可选：署名并用本机密钥签名，之后校验
 const signed = await optimizeBuffer(buffer, { attribution: { author: '张三', company: '柴犬工作室' } });
 const check = await checkSignatureOf(signed.output); // check.status: 'valid' | 'modified' | 'invalid' | 'unsigned'
+
+// 只署名，不压缩图片
+await attributeFile('in.slim.pptx', 'in.slim.signed.pptx', { author: '张三' });
 ```
 
 ## 开发

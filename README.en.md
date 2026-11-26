@@ -152,6 +152,8 @@ Tick **Add attribution** in the interface and enter an author (the company is op
 
 The attribution shape is hidden and empty, so it never appears in a slide show or a printout, and animations refer to shapes by number, so they are unaffected. Attributing a file again replaces the earlier attribution rather than adding another.
 
+A file you have compressed already does not need compressing again: tick **Attribution only, leave the images as they are** in the interface, or use `shibaslim sign`. Images and other media stay exactly as they are; only the three things above are written, and results get `.signed` in their name (`report.slim.signed.pptx`).
+
 The signature covers every part of the package. Any change after signing, including opening the file in PowerPoint and saving it again, makes it stop matching. To check a file:
 
 - **Interface**: drop it in; under its name you see "✓ signed on this computer", "✓ signed by Jane Doe, unchanged" or "⚠ signed by Jane Doe, changed since".
@@ -195,6 +197,9 @@ shibaslim "*.pptx" -c 40
 # Compress, attribute and sign
 shibaslim report.pptx --author "Jane Doe" --company "Shiba Studio"
 
+# Attribute a file you compressed earlier, leaving its images alone (writes report.slim.signed.pptx)
+shibaslim sign report.slim.pptx --author "Jane Doe"
+
 # Check the signature: has the file changed since it was signed?
 shibaslim verify report.slim.pptx
 ```
@@ -233,7 +238,7 @@ Advanced options override one value derived from the clarity; you will rarely ne
 | `--keep-png` | Never convert PNG to JPEG |
 | `--strip-thumbnail` | Remove the preview thumbnail shown by file managers |
 
-Exit codes: `0` when everything succeeded, `1` when a file failed, `2` for invalid arguments. `shibaslim verify` exits with `0` when every signature holds and `1` otherwise; with `--sign-key <file>` it tells whether that key (private or public) made each signature.
+Exit codes: `0` when everything succeeded, `1` when a file failed, `2` for invalid arguments. `shibaslim sign` takes `--author` (required), `--company`, `--sign-key`, `--no-sign`, `-o`, `--suffix` (default `.signed`), `--in-place`, `-r`, `-j` and `--json`. `shibaslim verify` exits with `0` when every signature holds and `1` otherwise; with `--sign-key <file>` it tells whether that key (private or public) made each signature.
 
 </details>
 
@@ -269,7 +274,7 @@ When an image changes format its extension changes too, so every `.rels` referen
 ## Use as a library
 
 ```js
-import { checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
+import { attributeFile, checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
 
 const report = await optimizeFile('in.pptx', 'out.pptx', {
   clarity: 70,
@@ -282,6 +287,9 @@ const { output } = await optimizeBuffer(buffer, { clarity: 40 });
 // Optional: attribute and sign with this computer's key, then check it
 const signed = await optimizeBuffer(buffer, { attribution: { author: 'Jane Doe', company: 'Shiba Studio' } });
 const check = await checkSignatureOf(signed.output); // check.status: 'valid' | 'modified' | 'invalid' | 'unsigned'
+
+// Attribute only, leaving the images alone
+await attributeFile('in.slim.pptx', 'in.slim.signed.pptx', { author: 'Jane Doe' });
 ```
 
 ## Development

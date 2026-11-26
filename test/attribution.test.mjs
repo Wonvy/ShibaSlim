@@ -8,7 +8,7 @@ import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import JSZip from 'jszip';
-import { SlimError, checkSignatureOf, fingerprint, loadKey, loadOrCreateKey, optimizeBuffer } from '../dist/index.js';
+import { SlimError, attributeBuffer, checkSignatureOf, fingerprint, loadKey, loadOrCreateKey, optimizeBuffer } from '../dist/index.js';
 import { parseXml } from '../dist/xml.js';
 import { buildFixture } from './fixture.mjs';
 
@@ -231,6 +231,32 @@ describe('attribution', () => {
     assert.equal((await checkSignatureOf(output)).status, 'valid');
   });
 
+  test('can attribute on its own, leaving the images and media exactly as they were', async () => {
+    const compressed = (await optimizeBuffer(fixture.data)).output;
+    const { output, report } = await attributeBuffer(compressed, { author: '张三', company: '柴犬', signingKey: key });
+    assert.equal(report.attribution.author, '张三');
+    assert.equal(report.attribution.fingerprint, fingerprint(key));
+    assert.equal((await checkSignatureOf(output)).status, 'valid');
+
+    const before = await JSZip.loadAsync(compressed);
+    const after = await JSZip.loadAsync(output);
+    const changed = [];
+    for (const name of Object.keys(after.files)) {
+      if (after.files[name].dir) continue;
+      const old = before.file(name);
+      if (!old || !(await old.async('nodebuffer')).equals(await after.file(name).async('nodebuffer'))) changed.push(name);
+    }
+    const expected = /^(docProps\/(core|app)\.xml|ppt\/slides\/slide\d+\.xml|ppt\/presentation\.xml|ppt\/_rels\/presentation\.xml\.rels|ppt\/tags\/tag1\.xml|\[Content_Types\]\.xml)$/;
+    assert.deepEqual(changed.filter((n) => !expected.test(n)), [], 'only attribution parts may change');
+    assert.ok(changed.some((n) => n.startsWith('ppt/slides/')));
+    const media = Object.keys(before.files).filter((n) => n.startsWith('ppt/media/'));
+    assert.deepEqual(Object.keys(after.files).filter((n) => n.startsWith('ppt/media/')), media, 'no media added, removed or renamed');
+
+    // Unlike compressing, it keeps what compression would have tidied away.
+    const { output: plain } = await attributeBuffer(fixture.data, { author: '张三', signingKey: false });
+    assert.ok((await JSZip.loadAsync(plain)).file(fixture.parts.orphan), 'unused media stays');
+  });
+
   test('checks and tidies the names', async () => {
     await assert.rejects(optimizeBuffer(fixture.data, { attribution: { author: '  ', signingKey: false } }), { code: 'error.authorMissing' });
     await assert.rejects(optimizeBuffer(fixture.data, { attribution: { author: 'a'.repeat(201), signingKey: false } }), { code: 'error.nameTooLong' });
@@ -311,6 +337,31 @@ describe('cli attribution', () => {
     assert.equal(mine[0].mine, false, 'not this computer’s key');
     const theirs = JSON.parse((await cli(['verify', 'team', '--json', '--sign-key', keyFile])).stdout);
     assert.equal(theirs[0].mine, true);
+  });
+
+  test('sign adds attribution without compressing, next to the original or in place', async () => {
+    const original = await readFile(path.join(dir, 'deck.pptx'));
+    const { stdout } = await cli(['sign', 'deck.slim.pptx', '--author', '张三']);
+    assert.match(stdout, /deck\.slim\.pptx {2}→ deck\.slim\.signed\.pptx {2}已署名并签名/);
+    const signed = await readFile(path.join(dir, 'deck.slim.signed.pptx'));
+    assert.equal((await checkSignatureOf(signed)).status, 'valid');
+    const source = await JSZip.loadAsync(await readFile(path.join(dir, 'deck.slim.pptx')));
+    const result = await JSZip.loadAsync(signed);
+    for (const name of Object.keys(source.files).filter((n) => n.startsWith('ppt/media/') && !source.files[n].dir)) {
+      assert.ok((await source.file(name).async('nodebuffer')).equals(await result.file(name).async('nodebuffer')), name);
+    }
+
+    // Scanning a folder skips earlier .signed results.
+    const folder = JSON.parse((await cli(['sign', '.', '--author', '张三', '--no-sign', '--json'])).stdout);
+    assert.ok(folder.every((r) => !r.input.endsWith('.signed.pptx')), JSON.stringify(folder.map((r) => r.input)));
+
+    await writeFile(path.join(dir, 'inplace.pptx'), original);
+    await cli(['sign', 'inplace.pptx', '--author', '张三', '--in-place']);
+    const json = JSON.parse((await cli(['verify', 'inplace.pptx', '--json'])).stdout);
+    assert.equal(json[0].status, 'valid');
+
+    const failure = await fails(['sign', 'deck.pptx']);
+    assert.equal(failure.code, 2, 'sign needs --author');
   });
 
   test('rejects attribution flags that do not fit together', async () => {

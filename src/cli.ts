@@ -3,17 +3,28 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { checkSignatureOf, defaultKeyPath, fingerprint, keyFileFingerprint, resolveAttribution, type SignatureCheck } from './attribution.js';
+import {
+  checkSignatureOf,
+  defaultKeyPath,
+  fingerprint,
+  keyFileFingerprint,
+  resolveAttribution,
+  type Attribution,
+  type ResolvedAttribution,
+  type SignatureCheck,
+} from './attribution.js';
 import { describeSettings, formatBytes, percentSaved } from './format.js';
 import { defaultOutDir, openWithSystem, startGui } from './gui.js';
-import { DEFAULT_SUFFIX, collectInputs, outputPathFor, previewPathFor } from './inputs.js';
+import { DEFAULT_SUFFIX, SIGNED_SUFFIX, collectInputs, outputPathFor, previewPathFor, type OutputPlan } from './inputs.js';
 import { SlimError } from './opc.js';
 import {
   DEFAULT_CLARITY,
+  attributeFile,
   mapPool,
   optimizeFile,
   resolveSettings,
   type FileOptions,
+  type AttributeReport,
   type OptimizeReport,
   type PresetName,
 } from './optimize.js';
@@ -25,6 +36,7 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
 用法:
   shibaslim <文件|目录|通配符 ...> [选项]
   shibaslim gui [--port <端口>] [--no-browser]   打开图形界面（在浏览器里拖入文件）
+  shibaslim sign <文件|目录 ...> --author <名字>  只署名、签名，不压缩图片（适合已压缩过的文件）
   shibaslim verify <文件|目录 ...> [-r]          校验署名：签名后文件有没有被改动过
 
 示例:
@@ -54,6 +66,7 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
       --company <名称>    同时写入文件属性里的公司
       --sign-key <文件>   改用这个 Ed25519 私钥（PEM 格式）签名
       --no-sign           只写署名，不签名
+                          已经压缩过、只想署名的文件，用 shibaslim sign
                           本机密钥保存在 ${defaultKeyPath()}
 
 高级（单独覆盖清晰度算出的某一项）:
@@ -129,6 +142,156 @@ function verifyLine(label: string, check: SignatureCheck, mine: boolean): string
     default:
       return `${dim('-')} ${label}  没有 ShibaSlim 签名`;
   }
+}
+
+interface OutputValues {
+  'out-dir'?: string | undefined;
+  suffix?: string | undefined;
+  'in-place'?: boolean | undefined;
+}
+
+/** Where results go: next to the originals with a suffix, under --out-dir, or over the originals. */
+function outputPlan(values: OutputValues, defaultSuffix: string): OutputPlan & { skipSuffix: string } {
+  const inPlace = values['in-place'] ?? false;
+  const outDir = values['out-dir'] === undefined ? undefined : path.resolve(values['out-dir']);
+  if (inPlace && (outDir !== undefined || values.suffix !== undefined)) {
+    throw new UsageError('--in-place 不能与 --out-dir 或 --suffix 同时使用');
+  }
+  const suffix = values.suffix ?? (outDir ? '' : defaultSuffix);
+  if (/[\\/]/.test(suffix)) throw new UsageError('--suffix 不能包含路径分隔符');
+  if (!inPlace && !outDir && suffix === '') {
+    throw new UsageError('--suffix 为空时需要指定 --out-dir，或使用 --in-place 覆盖原文件');
+  }
+  // Even when --out-dir drops the suffix, files left by earlier runs are outputs, not inputs.
+  const skipSuffix = inPlace ? '' : suffix || defaultSuffix;
+  return { inPlace, suffix, skipSuffix, ...(outDir ? { outDir } : {}) };
+}
+
+interface AttributionValues {
+  author?: string | undefined;
+  company?: string | undefined;
+  'sign-key'?: string | undefined;
+  'no-sign'?: boolean | undefined;
+}
+
+/** --author and its companions, resolved once so the key is read (or created) before files are processed side by side. */
+async function attributionOption(values: AttributionValues): Promise<ResolvedAttribution | null> {
+  const noSign = values['no-sign'] ?? false;
+  if (values.author === undefined && (values.company !== undefined || values['sign-key'] !== undefined || noSign)) {
+    throw new UsageError('--company、--sign-key 和 --no-sign 需要和 --author 一起使用');
+  }
+  if (noSign && values['sign-key'] !== undefined) throw new UsageError('--sign-key 和 --no-sign 不能同时使用');
+  if (values.author === undefined) return null;
+  return resolveAttribution({
+    author: values.author,
+    ...(values.company !== undefined ? { company: values.company } : {}),
+    signingKey: noSign ? false : (values['sign-key'] ?? undefined),
+  });
+}
+
+function attributionLine(attribution: ResolvedAttribution): string {
+  const who = attribution.company ? `${attribution.author}（${attribution.company}）` : attribution.author;
+  return `署名 ${who} · ${attribution.key ? `签名密钥 ${fingerprint(attribution.key)}` : '不签名'}`;
+}
+
+const SIGN_HELP = `用法: shibaslim sign <文件|目录|通配符 ...> --author <名字> [选项]
+
+只写署名并签名，图片和其他内容原样保留，适合已经压缩过的文件。
+默认在原文件旁边生成 <名称>.signed.pptx（如 汇报.slim.pptx → 汇报.slim.signed.pptx）。
+
+示例:
+  shibaslim sign 汇报.slim.pptx --author 张三 --company 柴犬工作室
+  shibaslim sign ./已压缩 -r --author 张三 --in-place
+
+署名:
+      --author <名字>     作者（必填）：写进文件属性和每页选择窗格里的隐藏署名
+      --company <名称>    同时写入文件属性里的公司
+      --sign-key <文件>   改用这个 Ed25519 私钥（PEM 格式）签名
+      --no-sign           只写署名，不签名
+
+输出:
+  -o, --out-dir <目录>    输出目录（保持原文件名与子目录结构）
+      --suffix <后缀>     输出文件名后缀，默认 ${SIGNED_SUFFIX}；指定 --out-dir 时默认不加
+      --in-place          直接改写原文件（只改署名，图片不受影响）
+
+其他:
+  -r, --recursive         递归处理子目录
+  -j, --jobs <n>          同时处理的文件数，默认 1
+      --json              以 JSON 输出结果
+  -h, --help              显示帮助
+
+本机密钥保存在 ${defaultKeyPath()}`;
+
+interface SignResult {
+  input: string;
+  output: string | null;
+  report?: AttributeReport;
+  error?: string;
+}
+
+async function runSign(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      author: { type: 'string' },
+      company: { type: 'string' },
+      'sign-key': { type: 'string' },
+      'no-sign': { type: 'boolean' },
+      'out-dir': { type: 'string', short: 'o' },
+      suffix: { type: 'string' },
+      'in-place': { type: 'boolean' },
+      recursive: { type: 'boolean', short: 'r' },
+      jobs: { type: 'string', short: 'j' },
+      json: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  });
+  if (values.help || positionals.length === 0) {
+    console.log(SIGN_HELP);
+    return values.help ? 0 : 2;
+  }
+  if (values.author === undefined) throw new UsageError('shibaslim sign 需要用 --author 指定作者');
+  const plan = outputPlan(values, SIGNED_SUFFIX);
+  const jobs = Math.max(1, Math.floor(numberOption('jobs', values.jobs) ?? 1));
+  const attribution = (await attributionOption(values))!;
+  const options: Attribution = { author: attribution.author, company: attribution.company, signingKey: attribution.key ?? false };
+
+  const human = !values.json;
+  const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, plan.skipSuffix, plan.outDir);
+  for (const arg of unmatched) console.error(red(`找不到匹配的文件：${arg}`));
+  if (items.length === 0) {
+    console.error('没有可处理的 pptx 文件。');
+    return 1;
+  }
+  if (human) console.log(dim(attributionLine(attribution)));
+
+  const results = await mapPool(items, jobs, async (item): Promise<SignResult> => {
+    const label = path.relative(process.cwd(), item.file) || item.file;
+    const output = outputPathFor(item, plan);
+    try {
+      if (!plan.inPlace && path.resolve(output) === item.file) throw new SlimError('error.samePath');
+      const report = await attributeFile(item.file, output, options);
+      if (human) {
+        const target = plan.inPlace ? '' : `  ${dim('→ ' + (path.relative(process.cwd(), output) || output))}`;
+        console.log(`${green(MARK.ok)} ${label}${target}  ${report.attribution.fingerprint ? '已署名并签名' : '已署名'}`);
+      }
+      return { input: item.file, output, report };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (human) console.log(`${red(MARK.fail)} ${label}  ${red(message)}`);
+      return { input: item.file, output: null, error: message };
+    }
+  });
+
+  const failed = results.filter((r) => r.error).length;
+  if (human) {
+    const failNote = failed > 0 ? red(`，${failed} 个失败`) : '';
+    console.log(`\n共 ${results.length} 个文件${failNote}；只加了署名，图片没有改动`);
+  } else {
+    console.log(JSON.stringify(results, null, 2));
+  }
+  return failed > 0 || unmatched.length > 0 ? 1 : 0;
 }
 
 const VERIFY_HELP = `用法: shibaslim verify <文件|目录|通配符 ...> [选项]
@@ -245,6 +408,7 @@ async function runGui(argv: string[]): Promise<number> {
 async function main(): Promise<number> {
   if (process.argv[2] === 'gui') return runGui(process.argv.slice(3));
   if (process.argv[2] === 'verify') return runVerify(process.argv.slice(3));
+  if (process.argv[2] === 'sign') return runSign(process.argv.slice(3));
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -284,17 +448,9 @@ async function main(): Promise<number> {
     return values.help ? 0 : 2;
   }
 
-  const inPlace = values['in-place'] ?? false;
+  const plan = outputPlan(values, DEFAULT_SUFFIX);
+  const { inPlace, outDir } = plan;
   const dryRun = values['dry-run'] ?? false;
-  const outDir = values['out-dir'] === undefined ? undefined : path.resolve(values['out-dir']);
-  if (inPlace && (outDir !== undefined || values.suffix !== undefined)) {
-    throw new UsageError('--in-place 不能与 --out-dir 或 --suffix 同时使用');
-  }
-  const suffix = values.suffix ?? (outDir ? '' : DEFAULT_SUFFIX);
-  if (/[\\/]/.test(suffix)) throw new UsageError('--suffix 不能包含路径分隔符');
-  if (!inPlace && !outDir && suffix === '') {
-    throw new UsageError('--suffix 为空时需要指定 --out-dir，或使用 --in-place 覆盖原文件');
-  }
   const jobs = Math.max(1, Math.floor(numberOption('jobs', values.jobs) ?? 1));
 
   const options: FileOptions = { dryRun };
@@ -317,28 +473,13 @@ async function main(): Promise<number> {
   if (values['strip-thumbnail']) options.stripThumbnail = true;
   const settings = resolveSettings(options);
 
-  const noSign = values['no-sign'] ?? false;
-  if (values.author === undefined && (values.company !== undefined || values['sign-key'] !== undefined || noSign)) {
-    throw new UsageError('--company、--sign-key 和 --no-sign 需要和 --author 一起使用');
-  }
-  if (noSign && values['sign-key'] !== undefined) throw new UsageError('--sign-key 和 --no-sign 不能同时使用');
-  // Resolved once, so the key is read (or created) before the files are processed side by side.
-  const attribution =
-    values.author === undefined
-      ? null
-      : await resolveAttribution({
-          author: values.author,
-          ...(values.company !== undefined ? { company: values.company } : {}),
-          signingKey: noSign ? false : (values['sign-key'] ?? undefined),
-        });
+  const attribution = await attributionOption(values);
   if (attribution) {
     options.attribution = { author: attribution.author, company: attribution.company, signingKey: attribution.key ?? false };
   }
 
   const human = !values.json;
-  // Even when --out-dir drops the suffix, .slim files left by earlier runs are outputs, not inputs.
-  const skipSuffix = inPlace ? '' : suffix || DEFAULT_SUFFIX;
-  const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, skipSuffix, outDir);
+  const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, plan.skipSuffix, outDir);
   for (const arg of unmatched) console.error(red(`找不到匹配的文件：${arg}`));
   if (items.length === 0) {
     console.error('没有可处理的 pptx 文件。');
@@ -348,16 +489,13 @@ async function main(): Promise<number> {
   if (human) {
     const note = dryRun ? '（试运行，不写 pptx）' : '';
     console.log(dim(`清晰度 ${settings.clarity}（${describeSettings(settings)}）${note}`));
-    if (attribution) {
-      const who = attribution.company ? `${attribution.author}（${attribution.company}）` : attribution.author;
-      console.log(dim(`署名 ${who} · ${attribution.key ? `签名密钥 ${fingerprint(attribution.key)}` : '不签名'}`));
-    }
+    if (attribution) console.log(dim(attributionLine(attribution)));
   }
 
   const showStatus = human && useColor && jobs === 1;
   const results = await mapPool(items, jobs, async (item): Promise<Result> => {
     const label = path.relative(process.cwd(), item.file) || item.file;
-    const output = outputPathFor(item, { inPlace, ...(outDir ? { outDir } : {}), suffix });
+    const output = outputPathFor(item, plan);
     const previewPath = preview ? previewPathFor(output) : undefined;
     if (showStatus) process.stdout.write(dim(`… ${label}`));
     const clearStatus = () => {

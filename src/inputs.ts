@@ -5,6 +5,8 @@ import { glob } from 'tinyglobby';
 export const EXTENSIONS = ['pptx', 'pptm', 'ppsx', 'ppsm', 'potx', 'potm'];
 export const EXT_RE = new RegExp(`\\.(${EXTENSIONS.join('|')})$`, 'i');
 export const DEFAULT_SUFFIX = '.slim';
+/** Added to files that were only attributed, not compressed. */
+export const SIGNED_SUFFIX = '.signed';
 
 export interface InputItem {
   file: string;

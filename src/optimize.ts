@@ -194,6 +194,33 @@ export async function optimizeFile(
   return report;
 }
 
+export interface AttributeReport {
+  before: number;
+  after: number;
+  attribution: AttributionResult;
+}
+
+/**
+ * Adds attribution to a presentation held in memory and changes nothing else: images, media and
+ * slide content stay as they are, for files that have been compressed already.
+ */
+export async function attributeBuffer(input: Buffer, attribution: Attribution): Promise<{ output: Buffer; report: AttributeReport }> {
+  const resolved = await resolveAttribution(attribution);
+  const pkg = await OpcPackage.load(input);
+  const danglingBefore = pkg.danglingCount();
+  const attributed = await applyAttribution(pkg, resolved);
+  const output = await pkg.save();
+  await verify(output, danglingBefore, [], Boolean(attributed.fingerprint));
+  return { output, report: { before: input.length, after: output.length, attribution: attributed } };
+}
+
+/** Writes `inputPath` with attribution added to `outputPath` (which may be the same file); see attributeBuffer. */
+export async function attributeFile(inputPath: string, outputPath: string, attribution: Attribution): Promise<AttributeReport> {
+  const { output, report } = await attributeBuffer(await readFile(inputPath), attribution);
+  await writeAtomic(outputPath, output);
+  return report;
+}
+
 async function writeAtomic(file: string, data: Buffer): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.tmp`;

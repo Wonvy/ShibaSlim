@@ -23,6 +23,8 @@ const el = {
   signFields: document.getElementById('sign-fields'),
   signAuthor: document.getElementById('sign-author'),
   signCompany: document.getElementById('sign-company'),
+  signOnly: document.getElementById('sign-only'),
+  signOnlyHint: document.getElementById('sign-only-hint'),
   empty: document.getElementById('empty'),
   listHead: document.getElementById('list-head'),
   list: document.getElementById('list'),
@@ -47,7 +49,7 @@ const state = {
   clarity: 60,
   outDir: '',
   /** Optional attribution: author and company written into results, which are then signed. */
-  sign: { on: false, author: '', company: '' },
+  sign: { on: false, author: '', company: '', only: false },
   defaultOutDir: '',
   stopped: false,
   /** Running inside the desktop app rather than a browser tab. */
@@ -170,7 +172,9 @@ function renderSettings() {
   el.clarity.style.setProperty('--fill', `${((state.clarity - 1) / 99) * 100}%`);
   el.clarityValue.textContent = String(state.clarity);
   const s = state.claritySettings[state.clarity];
-  el.clarityDetail.textContent = s
+  el.clarityDetail.textContent = signOnly()
+    ? t('gui.settings.signOnly')
+    : s
     ? t(s.pngQuality > 0 ? 'gui.settings.palette' : 'gui.settings.lossless', {
         ppi: s.ppi,
         jpeg: s.jpegQuality,
@@ -186,7 +190,12 @@ function renderSettings() {
   el.signFields.hidden = !state.sign.on;
   if (document.activeElement !== el.signAuthor) el.signAuthor.value = state.sign.author;
   if (document.activeElement !== el.signCompany) el.signCompany.value = state.sign.company;
+  el.signOnly.checked = state.sign.only;
+  el.signOnlyHint.hidden = !state.sign.only;
 }
+
+/** Only attribute the files, leaving their images as they are. */
+const signOnly = () => state.sign.on && state.sign.only;
 
 /** One line, trimmed: the server tidies names the same way before writing them. */
 const cleanName = (value) => String(value || '').replace(/\s+/g, ' ').trim();
@@ -224,7 +233,8 @@ function isStale(file) {
   if (file.state !== 'done') return false;
   const sent = state.sentWith.get(file.id);
   const r = file.result;
-  if (r && r.clarity !== state.clarity) return true;
+  if (r && Boolean(r.signOnly) !== signOnly()) return true;
+  if (r && !r.signOnly && r.clarity !== state.clarity) return true;
   const wanted = attribution();
   if (r && (wanted ? cleanName(r.author) !== wanted.author || cleanName(r.company) !== wanted.company : Boolean(r.author))) return true;
   return Boolean(sent && sent.outDir !== state.outDir);
@@ -285,6 +295,7 @@ function metaText(file) {
     case 'queued':
       return t('gui.meta.queued', { size }) + signatureText(file);
     case 'running':
+      if (signOnly()) return t('gui.meta.signing', { size });
       return file.progress >= 0.9
         ? t('gui.meta.packing', { size })
         : t('gui.meta.running', { size, pct: Math.round((file.progress / 0.9) * 100) });
@@ -294,6 +305,7 @@ function metaText(file) {
       const r = file.result;
       if (isStale(file)) return t('gui.meta.stale', { size });
       if (!r.changed) return t('gui.meta.unchanged', { size });
+      if (r.signOnly) return t('gui.meta.signedOnly', { size: formatBytes(r.after), author: r.author });
       const done = t('gui.meta.done', {
         before: formatBytes(r.before),
         after: formatBytes(r.after),
@@ -325,7 +337,8 @@ function renderRow(file) {
   li.querySelector('.bar > span').style.width = `${Math.round(progress * 100)}%`;
   // An attributed result can come out a little larger when its images had nothing left to give.
   const r = file.result;
-  li.querySelector('.saved').textContent = r && r.changed && r.after < r.before && !isStale(file) ? `−${percentSaved(r.before, r.after)}` : '';
+  li.querySelector('.saved').textContent =
+    r && r.changed && !r.signOnly && r.after < r.before && !isStale(file) ? `−${percentSaved(r.before, r.after)}` : '';
   const busy = file.state === 'uploading' || file.state === 'running';
   li.querySelector('[data-act="preview"]').disabled = file.state === 'uploading';
   li.querySelector('[data-act="remove"]').disabled = busy;
@@ -343,7 +356,9 @@ function renderSummary() {
   } else if (done.length > 0) {
     const before = done.reduce((s, f) => s + f.result.before, 0);
     const after = done.reduce((s, f) => s + f.result.after, 0);
-    html = I18N.rich('gui.summary.done', {
+    // Files that were only attributed save nothing, and may even grow by a few hundred bytes.
+    const saved = after < before && !done.every((f) => f.result.signOnly);
+    html = I18N.rich(saved ? 'gui.summary.done' : 'gui.summary.doneSame', {
       done: done.length,
       total: files.length,
       before: formatBytes(before),
@@ -356,13 +371,13 @@ function renderSummary() {
   if (uploading > 0) html += I18N.rich('gui.summary.uploading', { n: uploading });
   el.summary.innerHTML = html;
 
-  el.start.textContent = t(active ? 'gui.stop' : 'gui.start');
+  el.start.textContent = t(active ? 'gui.stop' : signOnly() ? 'gui.startSign' : 'gui.start');
   el.start.classList.toggle('stop', active);
   el.start.disabled = !active && !files.some(needsWork);
   el.clear.disabled = files.length === 0 || files.every((f) => f.state === 'running' || f.state === 'uploading');
-  el.clarity.disabled = active;
-  for (const button of el.presets) button.disabled = active;
-  for (const control of [el.signOn, el.signAuthor, el.signCompany]) control.disabled = active;
+  el.clarity.disabled = active || signOnly();
+  for (const button of el.presets) button.disabled = active || signOnly();
+  for (const control of [el.signOn, el.signAuthor, el.signCompany, el.signOnly]) control.disabled = active;
 }
 
 function renderAll() {
@@ -583,7 +598,10 @@ el.start.addEventListener('click', async () => {
       el.signAuthor.focus();
       return;
     }
-    await api('/api/compress', { method: 'POST', body: { ids, clarity: state.clarity, outDir: state.outDir, attribution: signWith } });
+    await api('/api/compress', {
+      method: 'POST',
+      body: { ids, clarity: state.clarity, outDir: state.outDir, attribution: signWith, signOnly: signOnly() },
+    });
     for (const id of ids) state.sentWith.set(id, { clarity: state.clarity, outDir: state.outDir });
   } catch (err) {
     toast(errorText(err));
@@ -611,6 +629,7 @@ el.signOn.addEventListener('change', () => {
 });
 el.signAuthor.addEventListener('input', () => setSign({ author: el.signAuthor.value }));
 el.signCompany.addEventListener('input', () => setSign({ company: el.signCompany.value }));
+el.signOnly.addEventListener('change', () => setSign({ only: el.signOnly.checked }));
 
 el.pickDir.addEventListener('click', async () => {
   el.pickDir.disabled = true;
@@ -722,6 +741,7 @@ async function init() {
     on: sign.on === true,
     author: typeof sign.author === 'string' ? sign.author : '',
     company: typeof sign.company === 'string' ? sign.company : '',
+    only: sign.only === true,
   };
   renderSettings();
   for (const file of data.files) state.files.set(file.id, file);

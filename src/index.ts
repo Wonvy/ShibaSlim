@@ -1,9 +1,12 @@
 export {
   DEFAULT_CLARITY,
   PRESETS,
+  attributeBuffer,
+  attributeFile,
   optimizeBuffer,
   optimizeFile,
   settingsForClarity,
+  type AttributeReport,
   type FileOptions,
   type ImageReport,
   type OptimizeOptions,
