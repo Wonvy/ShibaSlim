@@ -10,6 +10,7 @@
 mod engine;
 #[cfg(target_os = "macos")]
 mod menu;
+mod shell;
 mod text;
 mod updates;
 
@@ -125,11 +126,12 @@ fn main_window(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<WebviewWi
                 }
             }
         })
-        .on_new_window(move |url, features| {
+        .on_new_window(move |url, _features| {
+            // The desktop page opens comparisons through the engine (shell::Call::OpenPreview);
+            // anything else that tries to open a window goes to the browser.
             if popups.serves(&url) && url.path().starts_with("/api/preview/") {
-                match preview_window(&app_for_popups, &popups, features) {
-                    Ok(window) => return NewWindowResponse::Create { window },
-                    Err(err) => eprintln!("could not open the comparison window: {err}"),
+                if let Err(err) = preview_window(&app_for_popups, &popups, url, "ShibaSlim") {
+                    eprintln!("could not open the comparison window: {err}");
                 }
             } else {
                 open_in_browser(&url);
@@ -148,36 +150,32 @@ fn main_window(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<WebviewWi
     Ok(window)
 }
 
-/// The comparison page opens in its own window. It is generated on demand and can take a few seconds.
-fn preview_window(
+/// A comparison page, in a window of its own.
+pub(crate) fn preview_window(
     app: &AppHandle,
     engine: &Arc<Engine>,
-    features: tauri::webview::NewWindowFeatures,
+    url: Url,
+    title: &str,
 ) -> tauri::Result<WebviewWindow> {
     let n = engine.preview_count.fetch_add(1, Ordering::Relaxed) + 1;
     let navigation = engine.clone();
     let theme = app.get_webview_window("main").and_then(|w| w.theme().ok());
-    WebviewWindowBuilder::new(
-        app,
-        format!("preview-{n}"),
-        WebviewUrl::External("about:blank".parse().unwrap()),
-    )
-    .title("ShibaSlim")
-    .inner_size(1200.0, 860.0)
-    .min_inner_size(480.0, 400.0)
-    .background_color(background(theme))
-    .window_features(features)
-    .on_navigation(move |url| {
-        if url.scheme() == "about" || navigation.serves(url) {
-            return true;
-        }
-        open_in_browser(url);
-        false
-    })
-    .on_document_title_changed(|window, title| {
-        if !title.is_empty() {
-            let _ = window.set_title(&title);
-        }
-    })
-    .build()
+    WebviewWindowBuilder::new(app, format!("preview-{n}"), WebviewUrl::External(url))
+        .title(title)
+        .inner_size(1200.0, 860.0)
+        .min_inner_size(480.0, 400.0)
+        .background_color(background(theme))
+        .on_navigation(move |url| {
+            if navigation.serves(url) {
+                return true;
+            }
+            open_in_browser(url);
+            false
+        })
+        .on_document_title_changed(|window, title| {
+            if !title.is_empty() {
+                let _ = window.set_title(&title);
+            }
+        })
+        .build()
 }

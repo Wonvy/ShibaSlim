@@ -107,6 +107,49 @@ describe('gui server', () => {
     }
   });
 
+  test('lets the desktop app show files, open and pick folders, and open comparisons itself', async () => {
+    const outDir = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
+    const calls = [];
+    const shell = {
+      reveal: async (file) => void calls.push(['reveal', file]),
+      openFolder: async (dir) => void calls.push(['openFolder', dir]),
+      pickFolder: async (prompt) => (calls.push(['pickFolder', prompt]), '/picked/folder'),
+      openPreview: async (url, title) => void calls.push(['openPreview', url, title]),
+    };
+    const desktop = await startGui({ port: 0, defaultOutDir: outDir, desktop: true, shell });
+    const base = `http://127.0.0.1:${desktop.port}`;
+    const api = async (route, { method = 'GET', body, raw } = {}) => {
+      const headers = { 'X-Shiba-Token': desktop.token };
+      if (body !== undefined) headers['Content-Type'] = 'application/json';
+      const res = await fetch(base + route, { method, headers, body: raw ?? (body === undefined ? undefined : JSON.stringify(body)) });
+      return { status: res.status, data: await res.json() };
+    };
+    try {
+      assert.equal((await api('/api/state')).data.nativePreview, true);
+      const { data: entry } = await api('/api/upload?name=deck.pptx', { method: 'POST', raw: fixture.data });
+
+      // The comparison is built before the app is asked to open it, so its window never waits on a blank page.
+      assert.equal((await api(`/api/open-preview/${entry.id}?c=40`, { method: 'POST' })).status, 200);
+      const [, previewUrl, title] = calls.find(([kind]) => kind === 'openPreview');
+      assert.equal(title, 'deck.pptx');
+      assert.equal(new URL(previewUrl).origin, base);
+      const page = await fetch(previewUrl);
+      assert.equal(page.status, 200);
+      assert.match(await page.text(), /<h1>deck\.pptx<\/h1>/);
+
+      await api('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir } });
+      for (let i = 0; i < 300 && (await api('/api/state')).data.files[0].state !== 'done'; i++) await new Promise((r) => setTimeout(r, 100));
+      assert.equal((await api(`/api/reveal/${entry.id}`, { method: 'POST' })).status, 200);
+      assert.deepEqual(calls.find(([kind]) => kind === 'reveal'), ['reveal', path.join(outDir, 'deck.slim.pptx')]);
+      assert.equal((await api('/api/open-dir', { method: 'POST', body: { path: outDir } })).status, 200);
+      assert.deepEqual(calls.find(([kind]) => kind === 'openFolder'), ['openFolder', outDir]);
+      assert.deepEqual((await api('/api/pick-dir', { method: 'POST' })).data, { path: '/picked/folder' });
+    } finally {
+      await desktop.close();
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('refuses API calls without the token', async () => {
     assert.equal((await call('/api/state', { token: null })).status, 401);
     assert.equal((await call('/api/state', { token: 'wrong' })).status, 401);
@@ -145,7 +188,7 @@ describe('gui server', () => {
     assert.deepEqual(queued.data, { queued: 1 });
     const done = await waitFor(entry.id);
     assert.equal(done.state, 'done', done.error);
-    assert.equal(done.output, path.join(outDir, '课件', '第一章', 'a.pptx'));
+    assert.equal(done.output, path.join(outDir, '课件', '第一章', 'a.slim.pptx'));
     assert.ok(done.result.after < done.result.before * 0.3);
     assert.equal(done.result.clarity, 60);
 
@@ -154,7 +197,7 @@ describe('gui server', () => {
     const download = await call(`/api/download/${entry.id}?t=${server.token}`, { token: null });
     assert.equal(download.status, 200);
     assert.deepEqual(download.data, written);
-    assert.match(download.headers.get('content-disposition'), /filename\*=UTF-8''a\.pptx/);
+    assert.match(download.headers.get('content-disposition'), /filename\*=UTF-8''a\.slim\.pptx/);
 
     // Compressing the same file again replaces its own earlier result.
     await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 30, outDir } });
@@ -163,14 +206,23 @@ describe('gui server', () => {
     assert.ok(again.result.after < done.result.after);
   });
 
-  test('never overwrites a file it did not write', async () => {
-    const existing = path.join(outDir, 'keep.pptx');
-    await writeFile(existing, 'precious');
+  test('names results apart from their originals and never overwrites a file it did not write', async () => {
+    // Saving into the folder the original came from, which already has an earlier result too.
+    const original = path.join(outDir, 'keep.pptx');
+    const earlier = path.join(outDir, 'keep.slim.pptx');
+    await writeFile(original, 'original');
+    await writeFile(earlier, 'earlier result');
     const { data: entry } = await upload('keep.pptx');
     await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir } });
     const done = await waitFor(entry.id);
-    assert.equal(done.output, path.join(outDir, 'keep (2).pptx'));
-    assert.equal(await readFile(existing, 'utf8'), 'precious');
+    assert.equal(done.output, path.join(outDir, 'keep.slim (2).pptx'));
+    assert.equal(await readFile(original, 'utf8'), 'original');
+    assert.equal(await readFile(earlier, 'utf8'), 'earlier result');
+
+    // Compressing a result again does not pile up suffixes.
+    const { data: again } = await upload('keep.slim.pptx');
+    await call('/api/compress', { method: 'POST', body: { ids: [again.id], clarity: 60, outDir } });
+    assert.equal((await waitFor(again.id)).output, path.join(outDir, 'keep.slim (3).pptx'));
   });
 
   test('reports a broken upload as an error and keeps going', async () => {
@@ -192,7 +244,7 @@ describe('gui server', () => {
     assert.match(html, /<h1>季度汇报\.pptx<\/h1>/);
     assert.match(html, /<span class="value">40<\/span>/);
     // A preview is a dry run: nothing lands in the output folder.
-    assert.ok(!existsSync(path.join(outDir, '季度汇报.pptx')));
+    assert.ok(!existsSync(path.join(outDir, '季度汇报.slim.pptx')));
   });
 
   test('validates settings', async () => {

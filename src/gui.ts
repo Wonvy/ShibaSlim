@@ -9,7 +9,7 @@ import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
-import { EXT_RE } from './inputs.js';
+import { DEFAULT_SUFFIX, EXT_RE } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
 import { SlimError } from './opc.js';
 import { optimizeFile, type OptimizeReport } from './optimize.js';
@@ -33,6 +33,19 @@ export interface GuiOptions {
   appVersion?: string;
   /** Called when the page asks the desktop app to look for an update; the button only appears when this is set. */
   onCheckUpdate?: () => void;
+  /** Set by the desktop app: it does these natively instead of the server running system commands. */
+  shell?: DesktopShell;
+}
+
+export interface DesktopShell {
+  /** Shows a file, selected, in its folder. */
+  reveal(file: string): Promise<void>;
+  /** Opens a folder in the file manager. */
+  openFolder(dir: string): Promise<void>;
+  /** Asks for a folder; null when the user cancels. */
+  pickFolder(prompt: string): Promise<string | null>;
+  /** Opens a comparison page that is ready to serve in a window of its own. */
+  openPreview(url: string, title: string): Promise<void>;
 }
 
 export interface GuiServer {
@@ -187,13 +200,17 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     }
   }
 
-  /** Picks the output file for an entry without ever replacing a file this session did not write. */
+  /**
+   * Picks the output file for an entry: its name with .slim added (汇报.pptx -> 汇报.slim.pptx), so a
+   * result can never be mistaken for its original, and never a file this session did not write.
+   */
   async function claimOutput(entry: Entry, outDir: string): Promise<string> {
     const desired = path.join(outDir, ...entry.rel.split('/'));
     if (!isInsideOrEqual(outDir, desired)) throw new HttpError(400, 'error.badPath');
     const { dir, name, ext } = path.parse(desired);
+    const base = name.endsWith(DEFAULT_SUFFIX) ? name : name + DEFAULT_SUFFIX;
     for (let i = 1; ; i++) {
-      const candidate = i === 1 ? desired : path.join(dir, `${name} (${i})${ext}`);
+      const candidate = path.join(dir, i === 1 ? `${base}${ext}` : `${base} (${i})${ext}`);
       const owner = written.get(candidate);
       if (owner === entry.id || (!owner && !existsSync(candidate))) {
         if (entry.output && entry.output !== candidate && written.get(entry.output) === entry.id) {
@@ -280,7 +297,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (resource === 'state' && method === 'GET') {
-      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate) });
+      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate), nativePreview: Boolean(options.shell) });
     }
 
     if (resource === 'events' && method === 'GET') {
@@ -380,20 +397,32 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     if (resource === 'reveal' && method === 'POST') {
       const entry = entryOr404();
       if (!entry.output || !existsSync(entry.output)) throw new HttpError(404, 'error.noResult');
-      await reveal(entry.output);
+      await (options.shell ? options.shell.reveal(entry.output) : reveal(entry.output));
       return json(res, { ok: true });
     }
 
     if (resource === 'open-dir' && method === 'POST') {
       const dir = validateDir((await readJson(req)).path);
       await mkdir(dir, { recursive: true });
-      await openWithSystem(dir);
+      await (options.shell ? options.shell.openFolder(dir) : openWithSystem(dir));
       return json(res, { ok: true });
     }
 
     if (resource === 'pick-dir' && method === 'POST') {
       const lang: Locale = req.headers['x-shiba-lang'] === 'en' ? 'en' : 'zh';
-      return json(res, { path: await pickFolder(t(lang, 'gui.pickPrompt')) });
+      const prompt = t(lang, 'gui.pickPrompt');
+      return json(res, { path: await (options.shell ? options.shell.pickFolder(prompt) : pickFolder(prompt)) });
+    }
+
+    // Desktop app: build the comparison first, then have the app open it in a window, so the window
+    // never sits empty while the page is being generated.
+    if (resource === 'open-preview' && method === 'POST' && options.shell) {
+      const entry = entryOr404();
+      const clarity = Number(url.searchParams.get('c') ?? DEFAULT_CLARITY);
+      if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
+      await previewFor(entry, clarity);
+      await options.shell.openPreview(`http://127.0.0.1:${port}/api/preview/${entry.id}?t=${token}&c=${clarity}`, entry.name);
+      return json(res, { ok: true });
     }
 
     if (resource === 'check-update' && method === 'POST' && options.onCheckUpdate) {

@@ -90,13 +90,13 @@ The ShibaSlim page opens in your browser:
 3. To check the result first, click **Compare** next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
 
-The desktop app shows the same interface with a few differences: **Compare** opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so instead of **Quit** there is **Check for updates**. Its window, menus and dialogs also follow the system's language and light or dark appearance.
+The desktop app shows the same interface with a few differences: **Compare** is built in the background first and then opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so instead of **Quit** there is **Check for updates**. Its window, menus and dialogs also follow the system's language and light or dark appearance.
 
 The desktop app looks for a new version each time it starts. If there is one, it asks; click **Update Now** and it downloads, installs and reopens itself. To check right away, click **Check for updates** at the top right, or on macOS choose **ShibaSlim → Check for Updates…**.
 
 The switches at the top right set the theme (System / Light / Dark) and language (System / 中文 / English). Both follow the system by default and change along with it; a choice you make is remembered, and the comparison page uses it too.
 
-Results go to `Downloads/ShibaSlim` by default; you can change this on the page. Files keep their original names, and dropped folders keep their structure. If a file of the same name is already there, the result is saved as `name (2).pptx` instead.
+Results go to `Downloads/ShibaSlim` by default; you can change this on the page. Results get `.slim` added to their names (`report.pptx` → `report.slim.pptx`), so even saved next to the originals they cannot be mixed up with them; dropped folders keep their structure. If a file of that name is already there, the result is saved as `report.slim (2).pptx`; existing files are never overwritten.
 
 > [!NOTE]
 > The page is served only on `127.0.0.1` and its address carries a one-time access token, so other computers and other websites cannot reach it. Dropped files are copied to the system temp folder and deleted when you quit. Click **Quit** at the top right when you are done, or simply close the terminal window.

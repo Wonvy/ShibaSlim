@@ -46,6 +46,8 @@ const state = {
   stopped: false,
   /** Running inside the desktop app rather than a browser tab. */
   desktop: false,
+  /** The desktop app opens comparison pages in its own windows. */
+  nativePreview: false,
   /** The desktop app's version, when it can look for updates. */
   appVersion: null,
   /** The banner as a message key, so it can be shown again in another language. */
@@ -476,8 +478,19 @@ el.list.addEventListener('click', async (event) => {
   try {
     switch (button.dataset.act) {
       case 'preview':
-        if (window.open(`/api/preview/${id}?t=${tok}&c=${state.clarity}`, '_blank')) {
-          toast(t(state.desktop ? 'gui.toast.previewWindow' : 'gui.toast.previewOpening'));
+        if (state.nativePreview) {
+          // The desktop app opens its own window once the page is ready.
+          button.disabled = true;
+          toast(t('gui.toast.previewBuilding'));
+          try {
+            await api(`/api/open-preview/${id}?c=${state.clarity}`, { method: 'POST' });
+          } finally {
+            button.disabled = false;
+            const file = state.files.get(id);
+            if (file) renderRow(file);
+          }
+        } else if (window.open(`/api/preview/${id}?t=${tok}&c=${state.clarity}`, '_blank')) {
+          toast(t('gui.toast.previewOpening'));
         } else {
           toast(t('gui.toast.popupBlocked'));
         }
@@ -631,6 +644,7 @@ async function init() {
   state.claritySettings = data.claritySettings;
   state.defaultOutDir = data.defaultOutDir;
   state.desktop = data.desktop === true;
+  state.nativePreview = data.nativePreview === true;
   // In the desktop app the window's close button quits, and results are already saved where they belong.
   document.documentElement.classList.toggle('desktop', state.desktop);
   el.quit.hidden = state.desktop;

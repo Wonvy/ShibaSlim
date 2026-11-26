@@ -3,7 +3,7 @@
 //! shuts down when its stdin closes, so it never outlives the app, even after a crash.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -12,8 +12,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, Url, WebviewWindow};
 
+use crate::shell::{self, Call};
 use crate::updates::{self, Trigger};
 
 /// File name of the bundled Node runtime (see `bundle.externalBin`).
@@ -56,6 +58,11 @@ enum EngineMessage {
     /// The page's "Check for updates" button.
     #[serde(rename = "check-update")]
     CheckUpdate,
+    /// Something to do natively; answered on the engine's stdin with the same id.
+    Request {
+        id: u64,
+        call: Call,
+    },
 }
 
 impl Engine {
@@ -139,6 +146,10 @@ fn read_stdout(stdout: impl Read, engine: Arc<Engine>, app: &AppHandle, window: 
         match serde_json::from_str::<EngineMessage>(&line) {
             Ok(EngineMessage::Ready { url }) => match Url::parse(&url) {
                 Ok(url) => {
+                    if cfg!(debug_assertions) {
+                        // Development builds: lets the page's API be driven by hand.
+                        eprintln!("[engine] ready at {url}");
+                    }
                     let _ = engine.origin.set(url.origin().ascii_serialization());
                     ready = true;
                     if let Err(err) = window.navigate(url) {
@@ -161,6 +172,14 @@ fn read_stdout(stdout: impl Read, engine: Arc<Engine>, app: &AppHandle, window: 
                 return;
             }
             Ok(EngineMessage::CheckUpdate) => updates::check(app, engine.clone(), Trigger::Manual),
+            Ok(EngineMessage::Request { id, call }) => {
+                let app = app.clone();
+                let engine = engine.clone();
+                thread::spawn(move || {
+                    let result = shell::handle(&app, &engine, call);
+                    reply(&engine, id, result);
+                });
+            }
             Err(_) => println!("[engine] {line}"),
         }
     }
@@ -187,6 +206,18 @@ fn read_stdout(stdout: impl Read, engine: Arc<Engine>, app: &AppHandle, window: 
         show_error(&engine, window, &details);
     }
     // If it died after the page loaded, the page shows its own "disconnected" banner.
+}
+
+/// Answers a request on the engine's stdin.
+fn reply(engine: &Engine, id: u64, result: Result<Value, String>) {
+    let line = match result {
+        Ok(result) => json!({ "id": id, "result": result }),
+        Err(error) => json!({ "id": id, "error": error }),
+    };
+    if let Some(stdin) = engine.process.lock().unwrap().as_mut().and_then(|p| p.stdin.as_mut()) {
+        let _ = writeln!(stdin, "{line}");
+        let _ = stdin.flush();
+    }
 }
 
 /// Waits for the engine process to exit. Returns whether it succeeded, or None if it is still running.
