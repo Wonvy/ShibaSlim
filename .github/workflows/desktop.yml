@@ -105,10 +105,20 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          path: installers
+          path: artifacts
           merge-multiple: true
+
+      # Each artifact keeps its bundle sub-folder (dmg/, nsis/, appimage/, deb/); gather the files in one place
+      # and make sure all five installers are there before anything is published.
+      - name: Collect installers
+        run: |
+          mkdir installers
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.AppImage' -o -name '*.deb' \) -exec mv {} installers/ \;
+          ls -l installers
+          test "$(ls installers | wc -l)" -eq 5
 
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: installers/*
