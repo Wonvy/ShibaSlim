@@ -14,6 +14,7 @@ import { DEFAULT_SUFFIX, EXT_RE, SIGNED_SUFFIX } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
 import { OpcPackage, SlimError } from './opc.js';
 import { attributeFile, optimizeFile, thumbnailOf, type AttributeReport, type OptimizeReport } from './optimize.js';
+import { SLIDES_SUFFIX, renderSlides } from './render.js';
 
 /** A fixed port keeps the page's address stable, so its saved settings survive restarts. */
 export const DEFAULT_PORT = 51735;
@@ -146,6 +147,8 @@ const I18N_SCRIPT = runtimeScript(['gui.', 'error.', 'note.', 'prefs.']);
 const PAGE_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const MAX_JSON = 64 * 1024;
+/** Where slides can be drawn at all (with PowerPoint or WPS on Windows, PowerPoint or Quick Look on macOS). */
+const SLIDE_IMAGES = process.platform === 'darwin' || process.platform === 'win32';
 
 export function defaultOutDir(): string {
   const downloads = path.join(os.homedir(), 'Downloads');
@@ -270,6 +273,24 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     }
   }
 
+  /**
+   * Picks the folder for a file's slide pictures, 汇报-slides next to where its result goes, or a
+   * numbered one when a folder of that name exists that this session did not make.
+   */
+  function claimSlidesDir(entry: Entry, outDir: string): string {
+    const desired = path.join(outDir, ...entry.rel.split('/'));
+    if (!isInsideOrEqual(outDir, desired)) throw new HttpError(400, 'error.badPath');
+    const { dir, name } = path.parse(desired);
+    for (let i = 1; ; i++) {
+      const candidate = path.join(dir, i === 1 ? `${name}${SLIDES_SUFFIX}` : `${name}${SLIDES_SUFFIX} (${i})`);
+      const owner = written.get(candidate);
+      if (owner === entry.id || (!owner && !existsSync(candidate))) {
+        written.set(candidate, entry.id);
+        return candidate;
+      }
+    }
+  }
+
   function previewFor(entry: Entry, clarity: number): Promise<string> {
     const key = `${entry.id}:${clarity}`;
     let pending = previews.get(key);
@@ -373,7 +394,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (resource === 'state' && method === 'GET') {
-      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate), nativePreview: Boolean(options.shell) });
+      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate), nativePreview: Boolean(options.shell), slideImages: SLIDE_IMAGES });
     }
 
     if (resource === 'events' && method === 'GET') {
@@ -471,6 +492,14 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       });
       res.end(thumb.data);
       return;
+    }
+
+    // Saves every slide of the dropped file (not the compressed one) as a picture; the page then opens the folder.
+    if (resource === 'images' && method === 'POST') {
+      const entry = entryOr404();
+      const dir = claimSlidesDir(entry, validateDir((await readJson(req)).outDir));
+      const report = await renderSlides(entry.source, dir);
+      return json(res, { dir, count: report.files.length, renderer: report.renderer, failed: report.failed.map((f) => f.renderer) });
     }
 
     if (resource === 'download' && method === 'GET') {

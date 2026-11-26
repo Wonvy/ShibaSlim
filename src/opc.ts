@@ -241,8 +241,11 @@ export class OpcPackage {
 
   setContentType(name: string, contentType: string): void {
     if (this.contentType(name)?.toLowerCase() === contentType) return;
+    const partName = '/' + name.toLowerCase();
+    const override = this.overrides.find((o) => o.part.toLowerCase() === partName);
     const ext = extOf(name);
-    if (!this.defaults.some((d) => d.ext === ext)) this.defaults.push({ ext, type: contentType });
+    if (override) override.type = contentType;
+    else if (!this.defaults.some((d) => d.ext === ext)) this.defaults.push({ ext, type: contentType });
     else this.overrides.push({ part: '/' + name, type: contentType });
     this.typesDirty = true;
   }
@@ -260,18 +263,52 @@ export class OpcPackage {
     }
   }
 
-  async save(): Promise<Buffer> {
+  /**
+   * Removes every part that can no longer be reached by following relationships from the package
+   * root, with the relationships those parts had. Returns how many parts were removed.
+   */
+  prune(): number {
+    const bySource = new Map(this.relsFiles.map((file) => [file.source, file]));
+    const reachable = new Set<string>();
+    const queue = [''];
+    for (let source = queue.pop(); source !== undefined; source = queue.pop()) {
+      for (const rel of bySource.get(source)?.rels ?? []) {
+        if (rel.part && !reachable.has(rel.part)) {
+          reachable.add(rel.part);
+          queue.push(rel.part);
+        }
+      }
+    }
+    for (let i = this.relsFiles.length - 1; i >= 0; i--) {
+      const file = this.relsFiles[i]!;
+      if (file.source === '' || reachable.has(file.source)) continue;
+      this.remove(file.path);
+      this.relsFiles.splice(i, 1);
+    }
+    let removed = 0;
+    for (const name of this.names()) {
+      if (name === CONTENT_TYPES || RELS_RE.test(name) || reachable.has(name)) continue;
+      this.remove(name);
+      removed++;
+    }
+    return removed;
+  }
+
+  /** `fast` skips squeezing the XML harder, for copies that only live for a moment. */
+  async save(options: { fast?: boolean } = {}): Promise<Buffer> {
     this.flush();
     // JSZip passes untouched deflated entries through byte-for-byte, so the
     // ones worth squeezing harder have to be handed back as raw data.
-    for (const name of this.names()) {
-      if (this.touched.has(name) || !RECOMPRESS_EXT.has(extOf(name))) continue;
-      this.write(name, await this.read(name));
+    if (!options.fast) {
+      for (const name of this.names()) {
+        if (this.touched.has(name) || !RECOMPRESS_EXT.has(extOf(name))) continue;
+        this.write(name, await this.read(name));
+      }
     }
     return this.zip.generateAsync({
       type: 'nodebuffer',
       compression: 'DEFLATE',
-      compressionOptions: { level: 9 },
+      compressionOptions: { level: options.fast ? 1 : 9 },
     });
   }
 

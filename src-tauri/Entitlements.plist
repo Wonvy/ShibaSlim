@@ -9,5 +9,8 @@
   <true/>
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
+  <!-- Saving slides as pictures asks Microsoft PowerPoint, when installed, to export them (AppleScript). -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
 </dict>
 </plist>

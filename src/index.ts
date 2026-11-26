@@ -27,4 +27,12 @@ export {
   type SignatureStatus,
 } from './attribution.js';
 export { buildPreview, type PreviewInput } from './preview.js';
+export {
+  availableRenderers,
+  renderSlides,
+  type ImageFormat,
+  type RenderOptions,
+  type RenderReport,
+  type RendererName,
+} from './render.js';
 export { SlimError } from './opc.js';

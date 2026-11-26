@@ -33,6 +33,7 @@
 - **按显示尺寸缩图**：读取每张图片在幻灯片上实际显示多大，只保留需要的像素，裁剪和组合缩放都会算进去。
 - **一个清晰度参数**：1–100 一个数字，同时调好分辨率、JPEG 质量和 PNG 减色，不用研究参数。
 - **压缩前后对比**：随机抽几页，左右拖动分界线对比原图和压缩后，可以放大到 4 倍看细节。
+- **导出每页图片**：把每一页存成 PNG 或 JPG。Windows 上用已经装好的 PowerPoint 或 WPS，Mac 上用 PowerPoint，没有的话用系统自带的快速查看。
 - **桌面版、网页版和命令行**：下载安装包双击就能用，不用装 Node.js，发给别人也只是一个文件；也可以在浏览器里用，或者用命令行批量处理目录。
 - **在线更新**：桌面版启动时会检查有没有新版本，点一下就自动下载、安装并重新打开。
 - **浅色 / 深色，中文 / English**：页面默认跟随系统的主题和语言，也可以在右上角手动切换，选择会被记住。
@@ -88,6 +89,8 @@ npm install
 3. 想先看效果，就点文件右侧的“对比”，会在新标签页打开对比页面。这一步只是试压，不保存任何文件。
 4. 点“开始压缩”。完成后可以直接“下载”，或者点“显示”在文件夹中找到它。
 
+想要每一页的图片，点文件右侧的“图片”，见[导出每页图片](#导出每页图片)。
+
 想在结果里留下作者信息，压缩前勾选“加上署名”，填写作者和公司，见[署名](#署名可选)。
 
 桌面版和网页版是同一个界面，只有几处不同：“对比”会先在后台生成好，再在新窗口里打开；结果已经直接保存在“保存到”的文件夹里，点“显示”就能找到，所以没有“下载”按钮；关掉窗口就是退出，也就没有“退出”按钮，那个位置换成了“检查更新”。桌面版的窗口、菜单和对话框也跟随系统的语言和深浅色。
@@ -122,6 +125,38 @@ npm install
 
 > [!NOTE]
 > 对比页面只画图片。文字、形状和图表在压缩前后完全一样，所以没有画出来，页面会比真实的幻灯片显得空一些。
+
+## 导出每页图片
+
+在图形界面里点文件右侧的“图片”，或者用命令行 `shibaslim images`，就能把每一页存成图片，放在 `<名称>-slides` 文件夹里（如 `汇报.pptx` → `汇报-slides/01.png、02.png…`）。图形界面把这个文件夹放在“保存到”的位置，导出完自动打开；命令行默认放在原文件旁边。导出的是原文件，不是压缩后的文件；隐藏的幻灯片也会导出。
+
+pptx 文件里并没有存每一页的图片，需要有程序把幻灯片画出来。ShibaSlim 会自动选择这台电脑上最好的一个，失败时换下一个：
+
+| 系统 | 用什么画 | 说明 |
+|---|---|---|
+| Windows | Microsoft PowerPoint，其次 WPS Office | 需要已经安装其中一个，效果和在 PowerPoint 里另存为图片一样 |
+| macOS | Microsoft PowerPoint（已安装时） | 先存成 PDF，再按指定宽度画成图片。第一次使用时，系统会询问是否允许 ShibaSlim 控制 PowerPoint，PowerPoint 也可能询问能否访问 `~/Library/Caches/ShibaSlim/PowerPoint` 文件夹，都选允许即可，之后不再询问 |
+| macOS | 系统自带的快速查看（Quick Look） | 不用安装任何软件，速度很快。效果接近 PowerPoint，但部分图片效果（如改成灰度）和透明度会丢失 |
+| Linux | 暂不支持 | |
+
+导出时 PowerPoint 和 WPS 在后台打开一份临时副本，不会改动原文件；如果它们原本没有在运行，导出完会自动退出。
+
+```bash
+shibaslim images 汇报.pptx                       # 生成 汇报-slides/01.png、02.png…
+shibaslim images ./课件 -r -w 1280 --format jpg   # 整个目录，1280 像素宽的 JPG
+shibaslim images 汇报.pptx --renderer quicklook  # 指定用快速查看
+```
+
+| 选项 | 说明 |
+|---|---|
+| `-w, --width <像素>` | 图片宽度，默认 1920（16:9 的幻灯片即 1920×1080），高度按幻灯片比例 |
+| `--format <png\|jpg>` | 图片格式，默认 png |
+| `-q, --quality <1-100>` | jpg 的质量，默认 90 |
+| `--renderer <名称>` | 只用这一个：`powerpoint`、`wps` 或 `quicklook` |
+| `-o, --out-dir <目录>` | 输出目录（保持子目录结构）；默认放在原文件旁边 |
+| `-r, --recursive` / `--json` | 递归处理子目录 / 以 JSON 输出结果 |
+
+再次导出同一个文件时，命令行会替换 `<名称>-slides` 里之前导出的图片（只删 `01.png` 这样以数字命名的图片，其他文件不动）；图形界面则和压缩结果一样，从不覆盖不是这次打开后写的文件夹，会另存为 `汇报-slides (2)`。
 
 ## 清晰度
 
@@ -201,6 +236,9 @@ shibaslim sign 汇报.slim.pptx --author 张三
 
 # 校验署名：签名后有没有被改动过
 shibaslim verify 汇报.slim.pptx
+
+# 把每一页导出成图片（见“导出每页图片”）
+shibaslim images 汇报.pptx
 ```
 
 扫描目录时会跳过 `~$` 开头的 Office 临时文件，以及之前生成的 `*.slim.*` 文件。
@@ -269,11 +307,12 @@ pptx 本质上是一个 zip 压缩包，体积大多来自 `ppt/media/` 里的�
 - 带“放大”动画的图片，放大后可能不够清晰。这类文件建议调高清晰度，比如 `-c 85`。
 - 不压缩视频和音频。
 - 无法处理加密的 pptx 和旧版 `.ppt` 文件。
+- 导出图片在 Linux 上暂不支持；用快速查看画出的图片和 PowerPoint 不完全一样。
 
 ## 作为库使用
 
 ```js
-import { attributeFile, checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
+import { attributeFile, checkSignatureOf, optimizeFile, optimizeBuffer, renderSlides } from 'shibaslim';
 
 const report = await optimizeFile('in.pptx', 'out.pptx', {
   clarity: 70,
@@ -289,6 +328,9 @@ const check = await checkSignatureOf(signed.output); // check.status: 'valid' | 
 
 // 只署名，不压缩图片
 await attributeFile('in.slim.pptx', 'in.slim.signed.pptx', { author: '张三' });
+
+// 把每一页存成图片：out/01.png、02.png…
+const { files, renderer } = await renderSlides('in.pptx', 'out', { width: 1920, format: 'png' });
 ```
 
 ## 开发

@@ -14,5 +14,8 @@
   </array>
   <key>CFBundleAllowMixedLocalizations</key>
   <true/>
+  <!-- Shown when ShibaSlim first asks PowerPoint to export slides as pictures. -->
+  <key>NSAppleEventsUsageDescription</key>
+  <string>ShibaSlim 会让 Microsoft PowerPoint 把幻灯片导出成图片。ShibaSlim asks Microsoft PowerPoint to export slides as pictures.</string>
 </dict>
 </plist>

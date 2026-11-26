@@ -36,6 +36,7 @@
 - **Sized to how images are shown**: works out how large each image actually appears on its slides and keeps only the pixels needed, accounting for crops and group scaling.
 - **One clarity setting**: a single number from 1 to 100 sets resolution, JPEG quality and PNG colour reduction together.
 - **Before/after comparison**: picks a few random slides and lets you drag a divider between the original and the compressed version, with up to 4× zoom.
+- **Slides as pictures**: saves every slide as a PNG or JPG, drawn by PowerPoint or WPS on Windows, and by PowerPoint or, without it, the built-in Quick Look on a Mac.
 - **Desktop app, web page and CLI**: install the app and double-click, with no Node.js needed, and share it as a single file; or use it in a browser, or batch-process folders from the command line.
 - **Online updates**: the desktop app looks for a new version when it starts; one click downloads it, installs it and reopens the app.
 - **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
@@ -91,6 +92,8 @@ The ShibaSlim page opens in your browser:
 3. To check the result first, click **Compare** next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
 
+For a picture of every slide, click **Pictures** next to a file; see [Slides as pictures](#slides-as-pictures).
+
 To leave your name in the results, tick **Add attribution** and enter an author and company before you start; see [Attribution](#attribution-optional).
 
 The desktop app shows the same interface with a few differences: **Compare** is built in the background first and then opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so instead of **Quit** there is **Check for updates**. Its window, menus and dialogs also follow the system's language and light or dark appearance.
@@ -125,6 +128,38 @@ The comparison page picks a few random slides whose images changed and draws the
 
 > [!NOTE]
 > Only images are drawn. Text, shapes and charts are identical before and after, so they are left out and the page looks emptier than the real slide.
+
+## Slides as pictures
+
+Click **Pictures** next to a file in the graphical interface, or run `shibaslim images`, to save every slide as a picture in a `<name>-slides` folder (`report.pptx` → `report-slides/01.png, 02.png…`). The graphical interface puts that folder in the **Save to** folder and opens it when done; the command line puts it next to the original by default. The pictures are of the original file, not the compressed one, and hidden slides are included.
+
+A pptx holds no pictures of its slides, so a program has to draw them. ShibaSlim uses the best one this computer has, and moves on to the next if it fails:
+
+| System | Drawn by | Notes |
+|---|---|---|
+| Windows | Microsoft PowerPoint, then WPS Office | One of them must be installed; the result matches saving as pictures from PowerPoint |
+| macOS | Microsoft PowerPoint, when installed | Saved as a PDF first, then drawn at the width you ask for. The first time, macOS asks whether ShibaSlim may control PowerPoint, and PowerPoint may ask for access to `~/Library/Caches/ShibaSlim/PowerPoint`; allow both and you will not be asked again |
+| macOS | The built-in Quick Look | Nothing to install, and fast. Close to PowerPoint, but some picture effects (such as greyscale) and transparency are lost |
+| Linux | Not supported yet | |
+
+PowerPoint and WPS open a temporary copy in the background, so the original is never touched, and quit afterwards if they were not already running.
+
+```bash
+shibaslim images report.pptx                       # report-slides/01.png, 02.png…
+shibaslim images ./decks -r -w 1280 --format jpg   # a whole folder, as 1280-pixel-wide JPGs
+shibaslim images report.pptx --renderer quicklook  # use Quick Look
+```
+
+| Option | Description |
+|---|---|
+| `-w, --width <pixels>` | Picture width, default 1920 (1920×1080 for a 16:9 slide); the height follows the slide's proportions |
+| `--format <png\|jpg>` | Picture format, default png |
+| `-q, --quality <1-100>` | JPG quality, default 90 |
+| `--renderer <name>` | Use only this one: `powerpoint`, `wps` or `quicklook` |
+| `-o, --out-dir <dir>` | Output folder (keeps the sub-folder structure); by default next to the original |
+| `-r, --recursive` / `--json` | Include sub-folders / print results as JSON |
+
+Exporting the same file again from the command line replaces the pictures in its `<name>-slides` folder (only numbered ones such as `01.png`; other files are left alone). The graphical interface, as with compressed results, never writes into a folder it did not make in this session, and uses `report-slides (2)` instead.
 
 ## Clarity
 
@@ -204,6 +239,9 @@ shibaslim sign report.slim.pptx --author "Jane Doe"
 
 # Check the signature: has the file changed since it was signed?
 shibaslim verify report.slim.pptx
+
+# Save every slide as a picture (see "Slides as pictures")
+shibaslim images report.pptx
 ```
 
 When scanning folders, Office lock files starting with `~$` and earlier `*.slim.*` outputs are skipped.
@@ -272,11 +310,12 @@ When an image changes format its extension changes too, so every `.rels` referen
 - Images with a zoom animation may look soft once zoomed. Use a higher clarity for such files, for example `-c 85`.
 - Video and audio are not compressed.
 - Encrypted pptx files and legacy `.ppt` files cannot be processed.
+- Saving slides as pictures is not supported on Linux yet, and pictures drawn by Quick Look differ somewhat from PowerPoint's.
 
 ## Use as a library
 
 ```js
-import { attributeFile, checkSignatureOf, optimizeFile, optimizeBuffer } from 'shibaslim';
+import { attributeFile, checkSignatureOf, optimizeFile, optimizeBuffer, renderSlides } from 'shibaslim';
 
 const report = await optimizeFile('in.pptx', 'out.pptx', {
   clarity: 70,
@@ -292,6 +331,9 @@ const check = await checkSignatureOf(signed.output); // check.status: 'valid' | 
 
 // Attribute only, leaving the images alone
 await attributeFile('in.slim.pptx', 'in.slim.signed.pptx', { author: 'Jane Doe' });
+
+// Save every slide as a picture: out/01.png, 02.png…
+const { files, renderer } = await renderSlides('in.pptx', 'out', { width: 1920, format: 'png' });
 ```
 
 ## Development

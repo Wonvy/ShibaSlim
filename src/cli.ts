@@ -29,6 +29,19 @@ import {
   type PresetName,
 } from './optimize.js';
 import { DEFAULT_PREVIEW_PAGES } from './preview.js';
+import {
+  DEFAULT_IMAGE_WIDTH,
+  RENDERER_LABELS,
+  RENDERER_NAMES,
+  checkRenderOptions,
+  chooseRenderers,
+  renderSlides,
+  slidesDirFor,
+  type ImageFormat,
+  type RenderOptions,
+  type RenderReport,
+  type RendererName,
+} from './render.js';
 
 
 const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
@@ -38,6 +51,7 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
   shibaslim gui [--port <端口>] [--no-browser]   打开图形界面（在浏览器里拖入文件）
   shibaslim sign <文件|目录 ...> --author <名字>  只署名、签名，不压缩图片（适合已压缩过的文件）
   shibaslim verify <文件|目录 ...> [-r]          校验署名：签名后文件有没有被改动过
+  shibaslim images <文件|目录 ...> [-w 宽度]     把每一页导出成图片（需要 PowerPoint、WPS 或 macOS）
 
 示例:
   shibaslim 汇报.pptx                      生成 汇报.slim.pptx
@@ -353,6 +367,131 @@ async function runVerify(argv: string[]): Promise<number> {
   return unmatched.length === 0 && results.every((r) => r.status === 'valid') ? 0 : 1;
 }
 
+const IMAGES_HELP = `用法: shibaslim images <文件|目录|通配符 ...> [选项]
+
+把每一页幻灯片导出成图片，放在原文件旁边的 <名称>-slides 文件夹里（01.png、02.png…），
+隐藏的幻灯片也会导出。再次导出时，会替换这个文件夹里之前导出的图片。
+
+示例:
+  shibaslim images 汇报.pptx               生成 汇报-slides/01.png、02.png…
+  shibaslim images ./课件 -r -w 1280 --format jpg
+
+用什么画:
+  默认自动选择这台电脑上最好的一个，失败时换下一个：
+    Windows  Microsoft PowerPoint，其次 WPS Office（需要已经安装）
+    macOS    Microsoft PowerPoint（已安装时），其次系统自带的快速查看（Quick Look）
+  快速查看不用安装任何软件，但画得和 PowerPoint 不完全一样，部分图片效果和透明度会丢失。
+  在 Mac 上第一次用 PowerPoint 导出时，系统会询问是否允许控制 PowerPoint。
+
+选项:
+  -w, --width <像素>      图片宽度，默认 ${DEFAULT_IMAGE_WIDTH}（16:9 的幻灯片即 1920×1080），高度按幻灯片比例
+      --format <格式>     png（默认）或 jpg
+  -q, --quality <1-100>   jpg 的质量，默认 90
+      --renderer <名称>   只用这一个：${RENDERER_NAMES.join('、')}
+  -o, --out-dir <目录>    输出目录（保持子目录结构）
+  -r, --recursive         递归处理子目录
+      --json              以 JSON 输出结果
+  -h, --help              显示帮助`;
+
+interface ImagesResult {
+  input: string;
+  output: string | null;
+  renderer?: RendererName;
+  files?: string[];
+  failed?: RenderReport['failed'];
+  error?: string;
+}
+
+async function runImages(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      width: { type: 'string', short: 'w' },
+      format: { type: 'string' },
+      quality: { type: 'string', short: 'q' },
+      renderer: { type: 'string' },
+      'out-dir': { type: 'string', short: 'o' },
+      recursive: { type: 'boolean', short: 'r' },
+      json: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  });
+  if (values.help || positionals.length === 0) {
+    console.log(IMAGES_HELP);
+    return values.help ? 0 : 2;
+  }
+  const options: RenderOptions = {};
+  const width = numberOption('width', values.width);
+  if (width !== undefined) options.width = width;
+  if (values.format !== undefined) {
+    const format = values.format.toLowerCase() === 'jpeg' ? 'jpg' : values.format.toLowerCase();
+    if (format !== 'png' && format !== 'jpg') throw new UsageError('--format 只能是 png 或 jpg');
+    options.format = format satisfies ImageFormat;
+  }
+  const quality = numberOption('quality', values.quality);
+  if (quality !== undefined) options.quality = quality;
+  if (values.renderer !== undefined) {
+    const renderer = values.renderer.toLowerCase();
+    if (!(RENDERER_NAMES as readonly string[]).includes(renderer)) throw new UsageError(`--renderer 只能是 ${RENDERER_NAMES.join('、')}`);
+    options.renderer = renderer as RendererName;
+  }
+  // Settings and the renderer are checked once, before any file, rather than failing on every one.
+  checkRenderOptions(options);
+  await chooseRenderers(options.renderer);
+  const outDir = values['out-dir'] === undefined ? undefined : path.resolve(values['out-dir']);
+
+  const human = !values.json;
+  const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, '', outDir);
+  for (const arg of unmatched) console.error(red(`找不到匹配的文件：${arg}`));
+  if (items.length === 0) {
+    console.error('没有可处理的 pptx 文件。');
+    return 1;
+  }
+
+  const showStatus = human && useColor;
+  const results: ImagesResult[] = [];
+  for (const item of items) {
+    const label = path.relative(process.cwd(), item.file) || item.file;
+    const dir = slidesDirFor(item.file, item.rel, outDir);
+    const status = (text: string) => {
+      if (showStatus) process.stdout.write(`\r\x1b[K${text}`);
+    };
+    try {
+      status(dim(`… ${label}`));
+      const report = await renderSlides(item.file, dir, {
+        ...options,
+        onProgress: ({ done, total }) => status(dim(`… ${label}  ${done}/${total}`)),
+      });
+      status('');
+      if (human) {
+        const used = RENDERER_LABELS[report.renderer];
+        const note = report.failed.map((f) => `${RENDERER_LABELS[f.renderer]} 没有成功（${f.error}），改用 ${used}`).join('；');
+        console.log(
+          `${green(MARK.ok)} ${label}  ${dim('→ ' + (path.relative(process.cwd(), dir) || dir))}  ` +
+            `${report.files.length} 张 ${report.width}×${report.height} · ${used}${note ? '\n  ' + dim(note) : ''}`,
+        );
+      }
+      results.push({ input: item.file, output: dir, renderer: report.renderer, files: report.files, failed: report.failed });
+    } catch (err) {
+      status('');
+      const message = err instanceof Error ? err.message : String(err);
+      if (human) console.log(`${red(MARK.fail)} ${label}  ${red(message)}`);
+      results.push({ input: item.file, output: null, error: message });
+    }
+  }
+
+  const failed = results.filter((r) => r.error).length;
+  if (human) {
+    const pictures = results.reduce((sum, r) => sum + (r.files?.length ?? 0), 0);
+    const failNote = failed > 0 ? red(`，${failed} 个失败`) : '';
+    console.log(`\n共 ${results.length} 个文件${failNote}，导出 ${pictures} 张图片`);
+  } else {
+    console.log(JSON.stringify(results, null, 2));
+  }
+  return failed > 0 || unmatched.length > 0 ? 1 : 0;
+}
+
 function imageLines(report: OptimizeReport): string[] {
   return report.images.map((image) => {
     const name = path.posix.basename(image.part);
@@ -410,6 +549,7 @@ async function main(): Promise<number> {
   if (process.argv[2] === 'gui') return runGui(process.argv.slice(3));
   if (process.argv[2] === 'verify') return runVerify(process.argv.slice(3));
   if (process.argv[2] === 'sign') return runSign(process.argv.slice(3));
+  if (process.argv[2] === 'images') return runImages(process.argv.slice(3));
   const { values, positionals } = parseArgs({
     allowPositionals: true,
     options: {

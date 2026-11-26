@@ -60,6 +60,8 @@ const state = {
   appVersion: null,
   /** The banner as a message key, so it can be shown again in another language. */
   banner: null,
+  /** Files whose slides are being saved as pictures. */
+  exporting: new Set(),
 };
 let uploadSeq = 0;
 
@@ -262,6 +264,7 @@ function createRow(file) {
     <div class="saved"></div>
     <div class="row-actions">
       <button type="button" data-act="preview" data-t="gui.row.preview" data-t-title="gui.row.previewTitle"></button>
+      <button type="button" data-act="images" data-t="gui.row.images" data-t-title="gui.row.imagesTitle"></button>
       <button type="button" data-act="download" data-t="gui.row.download" data-t-title="gui.row.downloadTitle"></button>
       <button type="button" data-act="reveal" data-t="gui.row.reveal" data-t-title="gui.row.revealTitle"></button>
       <button type="button" data-act="remove" data-t-title="gui.row.remove" data-t-aria="gui.row.remove">×</button>
@@ -355,7 +358,12 @@ function renderRow(file) {
     r && r.changed && !r.signOnly && r.after < r.before && !isStale(file) ? `−${percentSaved(r.before, r.after)}` : '';
   const busy = file.state === 'uploading' || file.state === 'running';
   li.querySelector('[data-act="preview"]').disabled = file.state === 'uploading';
-  li.querySelector('[data-act="remove"]').disabled = busy;
+  const images = li.querySelector('[data-act="images"]');
+  const exporting = state.exporting.has(file.id);
+  images.disabled = file.state === 'uploading' || exporting;
+  images.dataset.t = exporting ? 'gui.row.imagesBusy' : 'gui.row.images';
+  images.textContent = t(images.dataset.t);
+  li.querySelector('[data-act="remove"]').disabled = busy || state.exporting.has(file.id);
 }
 
 function renderSummary() {
@@ -575,6 +583,9 @@ el.list.addEventListener('click', async (event) => {
           toast(t('gui.toast.popupBlocked'));
         }
         break;
+      case 'images':
+        await exportImages(id);
+        break;
       case 'download': {
         const a = document.createElement('a');
         a.href = `/api/download/${id}?t=${tok}`;
@@ -594,6 +605,30 @@ el.list.addEventListener('click', async (event) => {
     toast(errorText(err));
   }
 });
+
+/** Saves every slide of a file as a picture in the save folder, then opens that folder. */
+async function exportImages(id) {
+  const rerender = () => {
+    const file = state.files.get(id);
+    if (file) renderRow(file);
+  };
+  state.exporting.add(id);
+  rerender();
+  toast(t('gui.toast.imagesRunning'));
+  try {
+    const result = await api(`/api/images/${id}`, { method: 'POST', body: { outDir: state.outDir } });
+    const renderer = { t: `gui.renderer.${result.renderer}` };
+    toast(
+      result.failed.length > 0
+        ? t('gui.toast.imagesFellBack', { n: result.count, renderer, failed: result.failed.map((name) => t(`gui.renderer.${name}`)).join(' / ') })
+        : t('gui.toast.imagesDone', { n: result.count, renderer }),
+    );
+    await api('/api/open-dir', { method: 'POST', body: { path: result.dir } });
+  } finally {
+    state.exporting.delete(id);
+    rerender();
+  }
+}
 
 el.start.addEventListener('click', async () => {
   const files = [...state.files.values()];
@@ -743,6 +778,7 @@ async function init() {
   state.nativePreview = data.nativePreview === true;
   // In the desktop app the window's close button quits, and results are already saved where they belong.
   document.documentElement.classList.toggle('desktop', state.desktop);
+  document.documentElement.classList.toggle('no-slide-images', data.slideImages !== true);
   el.quit.hidden = state.desktop;
   state.appVersion = data.canUpdate ? data.appVersion : null;
   el.update.hidden = !data.canUpdate;

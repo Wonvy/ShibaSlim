@@ -356,6 +356,33 @@ describe('gui server', () => {
     await call(`/api/files/${without.id}`, { method: 'DELETE' });
   });
 
+  test('saves the slides of a dropped file as pictures in the save folder', async () => {
+    const { data: state } = await call('/api/state');
+    assert.equal(state.slideImages, process.platform === 'darwin' || process.platform === 'win32');
+    const { data: entry } = await upload('页面.pptx', 'deck/页面.pptx');
+    const res = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir } });
+    if (process.platform === 'linux') {
+      assert.equal(res.data.code, 'error.noRenderer');
+      return;
+    }
+    if (process.platform === 'win32' && res.data.code === 'error.noRendererWindows') return;
+    assert.equal(res.status, 200, JSON.stringify(res.data));
+    assert.equal(res.data.dir, path.join(outDir, 'deck', '页面-slides'));
+    assert.equal(res.data.count, 9);
+    assert.deepEqual(res.data.failed, []);
+    assert.deepEqual(readdirSync(res.data.dir), ['01.png', '02.png', '03.png', '04.png', '05.png', '06.png', '07.png', '08.png', '09.png']);
+
+    // Saving again replaces the file's own pictures; another file of the same name gets a folder of its own.
+    const again = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir } });
+    assert.equal(again.data.dir, res.data.dir);
+    const { data: other } = await upload('页面.pptx', 'deck/页面.pptx');
+    const second = await call(`/api/images/${other.id}`, { method: 'POST', body: { outDir } });
+    assert.equal(second.data.dir, path.join(outDir, 'deck', '页面-slides (2)'));
+
+    const relative = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir: 'relative/dir' } });
+    assert.equal(relative.data.code, 'error.outDirRelative');
+  });
+
   test('removes files from the list', async () => {
     const { data: entry } = await upload('gone.pptx');
     assert.equal((await call(`/api/files/${entry.id}`, { method: 'DELETE' })).status, 200);
@@ -401,7 +428,8 @@ describe('gui server port', () => {
 describe('gui server cleanup', () => {
   test('close() removes uploaded files', async () => {
     const outDir = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
-    const uploadDirs = () => readdirSync(tmpdir()).filter((n) => n.startsWith('shibaslim-') && !n.startsWith('shibaslim-gui-'));
+    // Just the server's own upload folder (shibaslim-XXXXXX), not the other temp folders tests in parallel make.
+    const uploadDirs = () => readdirSync(tmpdir()).filter((n) => /^shibaslim-[A-Za-z0-9]{6}$/.test(n));
     const before = uploadDirs();
     const server = await startGui({ port: 0, defaultOutDir: outDir });
     const res = await fetch(`http://127.0.0.1:${server.port}/api/upload?name=x.pptx`, {
