@@ -77,3 +77,14 @@ export function escapeAttr(value: string): string {
 export function escapeXml(value: string): string {
   return escapeAttr(value).replace(/[\t\n\r]/g, (c) => `&#${c.charCodeAt(0)};`);
 }
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+/** The text an escaped attribute value stands for: the five named entities and character references. */
+export function unescapeXml(value: string): string {
+  return value.replace(/&(?:#x([0-9a-f]+)|#(\d+)|(amp|lt|gt|quot|apos));/gi, (whole, hex: string, dec: string, name: string) => {
+    if (name) return ENTITIES[name.toLowerCase()] ?? whole;
+    const code = hex ? parseInt(hex, 16) : Number(dec);
+    return code <= 0x10ffff ? String.fromCodePoint(code) : whole;
+  });
+}

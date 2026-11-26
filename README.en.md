@@ -40,7 +40,7 @@
 - **Online updates**: the desktop app looks for a new version when it starts; one click downloads it, installs it and reopens the app.
 - **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
 - **Your files are safe**: originals are left alone by default and results are saved as new files; the graphical interface never overwrites an existing file. Every result is re-read and checked before it is written.
-- **Optional attribution**: writes the author and company into the file properties, puts a hidden attribution object in every slide's selection pane, and signs the result with this computer's key, so you can later check whether a file changed after signing.
+- **Optional attribution**: writes the author and company into the file properties, appends it to the name of every shape in the selection pane, and signs the result with this computer's key, so you can later check whether a file changed after signing.
 - **Runs locally**: nothing is uploaded to the internet. Works on macOS, Windows and Linux.
 
 ## Quick start
@@ -147,10 +147,12 @@ Tick **Add attribution** in the interface and enter an author (the company is op
 | Where | What | Where you see it |
 |---|---|---|
 | File properties (`docProps/core.xml`, `docProps/app.xml`) | Author, last saved by, company | Windows: right-click → Properties → Details; PowerPoint: File → Info; macOS Spotlight (`mdls file.pptx`) |
-| Every slide's selection pane (`ppt/slides/*.xml`) | A hidden, empty shape named `© 2026 Jane Doe · Company`, listed first | PowerPoint: Home → Arrange → Selection Pane (<kbd>Alt</kbd>+<kbd>F10</kbd>) |
+| Every slide's selection pane (`ppt/slides/*.xml`) | ` · © Jane Doe` after the name of every shape, such as `Picture 3 · © Jane Doe`, groups and the shapes in them included | PowerPoint: Home → Arrange → Selection Pane (<kbd>Alt</kbd>+<kbd>F10</kbd>); the animation pane shows the same names |
 | Presentation tags (`ppt/tags/*.xml`) | Author, time of signing, public key and an Ed25519 signature | Not shown anywhere; checked with ShibaSlim |
 
-The attribution shape is hidden and empty, so it never appears in a slide show or a printout, and animations refer to shapes by number, so they are unaffected. Attributing a file again replaces the earlier attribution rather than adding another.
+No shapes are added, only names change, so slide shows and printouts look exactly the same. Animations refer to shapes by number, so they are unaffected; Morph pairs shapes across slides by name, and every name gets the same ending, so the pairs stay the same too. Attributing a file again replaces the attribution at the end of each name rather than adding another, and removes the hidden attribution shape version 0.2.0 put on every slide. Shapes on masters and layouts keep their names.
+
+Macros in a `.pptm` that look shapes up by name (`Shapes("Picture 3")`) no longer find them once they are renamed, so check such files before attributing them.
 
 A file you have compressed already does not need compressing again: tick **Attribution only, leave the images as they are** in the interface, or use `shibaslim sign`. Images and other media stay exactly as they are; only the three things above are written, and results get `.signed` in their name (`report.slim.signed.pptx`).
 
@@ -170,7 +172,7 @@ Files are signed with this computer's key, created the first time you attribute 
 Copy this file along when you move to another computer, so your signatures still show as your own. A team can share one key with `--sign-key` or the `SHIBASLIM_KEY_FILE` environment variable.
 
 > [!IMPORTANT]
-> Attribution records; it does not protect. PowerPoint's Inspect Document removes file properties and hidden objects in one click, and anyone who unzips the file can delete the tags. A valid signature shows that the file has not changed since it was signed with a particular key, not who signed it: anyone can sign a copy with a key of their own. If you need the "signed" status that Office itself recognises, add a digital signature in PowerPoint (Protect Presentation → Add a Digital Signature) after compressing.
+> Attribution records; it does not protect. PowerPoint's Inspect Document removes file properties in one click, shapes can be renamed back by hand, and anyone who unzips the file can delete the tags. A valid signature shows that the file has not changed since it was signed with a particular key, not who signed it: anyone can sign a copy with a key of their own. If you need the "signed" status that Office itself recognises, add a digital signature in PowerPoint (Protect Presentation → Add a Digital Signature) after compressing.
 
 ## Command line
 
@@ -256,7 +258,7 @@ When an image changes format its extension changes too, so every `.rels` referen
 <details>
 <summary><b>What is never changed</b></summary>
 
-- The slide XML itself: text, layout, animations and so on (with attribution on, only a hidden attribution shape is added to each slide)
+- The slide XML itself: text, layout, animations and so on (with attribution on, only the attribution after each shape's name)
 - Vector images (EMF, WMF, SVG), GIFs, video and audio
 - Images that use "Set Transparent Color", which relies on exact pixel values that lossy compression would break
 - Tiled image fills are re-encoded but not downsampled

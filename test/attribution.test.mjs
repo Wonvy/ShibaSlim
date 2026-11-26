@@ -15,7 +15,6 @@ import { buildFixture } from './fixture.mjs';
 const run = promisify(execFile);
 const CLI = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
 const SLIDES = 9;
-const YEAR = new Date().getFullYear();
 
 /** Temp folders are named apart from `shibaslim-…`, which the gui tests count while they run. */
 const tempDir = () => mkdtemp(path.join(tmpdir(), 'slimsign-'));
@@ -52,7 +51,16 @@ async function edit(buffer, name, change) {
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-const markers = (xml) => [...xml.matchAll(/<p:sp>(?:(?!<\/p:sp>)[\s\S])*?title="ShibaSlim"[\s\S]*?<\/p:sp>/g)].map((m) => m[0]);
+/** The names of every cNvPr on a slide, in order; the first is the slide's own root group. */
+function shapeNames(xml) {
+  const names = [];
+  const walk = (node) => {
+    if (node.local === 'cNvPr') names.push(node.attrs.name);
+    node.children.forEach(walk);
+  };
+  walk(parseXml(xml));
+  return names;
+}
 
 describe('attribution', () => {
   const key = generateKeyPairSync('ed25519').privateKey;
@@ -83,16 +91,14 @@ describe('attribution', () => {
     assert.match(await pkg.text('docProps/app.xml'), /<Company>柴犬 &lt;工作室&gt;<\/Company>/);
   });
 
-  test('puts one hidden marker on top of every slide, with an id no other shape uses', async () => {
+  test('appends the author to the name of every shape, adding no shapes', async () => {
+    const original = await JSZip.loadAsync(fixture.data);
     for (let n = 1; n <= SLIDES; n++) {
       const xml = await pkg.text(`ppt/slides/slide${n}.xml`);
-      const found = markers(xml);
-      assert.equal(found.length, 1, `slide ${n}`);
-      assert.match(found[0], new RegExp(`name="© ${YEAR} 张三 &amp; &quot;Co&quot; · 柴犬 &lt;工作室&gt;"`));
-      assert.match(found[0], /hidden="1"/);
-      assert.ok(xml.includes(`${found[0]}</p:spTree>`), `slide ${n}: the marker should be the topmost shape`);
-      const ids = [...xml.matchAll(/<p:cNvPr\b[^>]*\sid="(\d+)"/g)].map((m) => m[1]);
-      assert.equal(new Set(ids).size, ids.length, `slide ${n} has duplicate shape ids: ${ids}`);
+      assert.match(xml, /name="Image 0 · © 张三 &amp; &quot;Co&quot;"/, `slide ${n}`);
+      const before = shapeNames(await original.file(`ppt/slides/slide${n}.xml`).async('string'));
+      assert.deepEqual(shapeNames(xml), before.map((name, i) => (i === 0 ? name : `${name} · © 张三 & "Co"`)), `slide ${n}`);
+      assert.doesNotMatch(xml, /title="ShibaSlim"/);
     }
   });
 
@@ -147,9 +153,7 @@ describe('attribution', () => {
     assert.equal(again.report.changed, true, 'an attributed result is written even if it is not smaller');
     const { zip, text } = await open(again.output);
     for (let n = 1; n <= SLIDES; n++) {
-      const found = markers(await text(`ppt/slides/slide${n}.xml`));
-      assert.equal(found.length, 1, `slide ${n}`);
-      assert.match(found[0], new RegExp(`name="© ${YEAR} 李四"`));
+      assert.deepEqual(shapeNames(await text(`ppt/slides/slide${n}.xml`)), ['', 'Image 0 · © 李四'], `slide ${n}`);
     }
     assert.match(await text('docProps/core.xml'), /<dc:creator>李四<\/dc:creator>/);
     assert.deepEqual(Object.keys(zip.files).filter((n) => /^ppt\/tags\/./.test(n)), ['ppt/tags/tag1.xml']);
@@ -201,13 +205,47 @@ describe('attribution', () => {
     assert.equal((await checkSignatureOf(changed)).status, 'modified');
   });
 
-  test('keeps the shape tree’s own extension list last', async () => {
-    const ext = '<p:extLst><p:ext uri="{BB962C8B-B14F-4D97-AF65-F5344CB8AC3E}"><p14:creationId xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main" val="1"/></p:ext></p:extLst>';
-    const data = await edit(fixture.data, 'ppt/slides/slide1.xml', (xml) => xml.replace('</p:spTree>', `${ext}</p:spTree>`));
-    const { output } = await optimizeBuffer(data, { attribution: { author: '张三', signingKey: false } });
-    const xml = await (await open(output)).text('ppt/slides/slide1.xml');
-    const [marker] = markers(xml);
-    assert.ok(xml.includes(`${marker}${ext}</p:spTree>`));
+  test('names groups and what is in them, and removes the hidden shape earlier versions added', async () => {
+    const shape = (id, attrs, inner = '') =>
+      `<p:sp><p:nvSpPr><p:cNvPr id="${id}" ${attrs}${inner ? `>${inner}</p:cNvPr>` : '/>'}<p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/></p:sp>`;
+    const creationId =
+      '<a:extLst><a:ext uri="{FF2B5EF4-FFF2-40B4-BE49-F238E27FC236}"><a16:creationId xmlns:a16="http://schemas.microsoft.com/office/drawing/2014/main" id="{1}"/></a:ext></a:extLst>';
+    const extra =
+      '<p:grpSp><p:nvGrpSpPr><p:cNvPr id="10" name="组合 3"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>' +
+      shape(11, `name='Arrow "up"' descr="a > b"`, creationId) +
+      shape(12, 'name=""') +
+      '</p:grpSp>' +
+      '<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">' +
+      `<mc:Choice Requires="p14">${shape(13, 'name="文本 5"')}</mc:Choice><mc:Fallback>${shape(13, 'name="文本 5"')}</mc:Fallback></mc:AlternateContent>` +
+      shape(14, 'name="© 2026 旧作者 · 旧公司" title="ShibaSlim" hidden="1"');
+    const data = await edit(fixture.data, 'ppt/slides/slide1.xml', (xml) => xml.replace('</p:spTree>', `${extra}</p:spTree>`));
+
+    const first = (await attributeBuffer(data, { author: '张三', signingKey: false })).output;
+    const xml = await (await open(first)).text('ppt/slides/slide1.xml');
+    assert.deepEqual(shapeNames(xml), [
+      '',
+      'Image 0 · © 张三',
+      '组合 3 · © 张三',
+      'Arrow "up" · © 张三',
+      ' · © 张三',
+      '文本 5 · © 张三',
+      '文本 5 · © 张三',
+    ]);
+    assert.ok(xml.includes(`name="Arrow &quot;up&quot; · © 张三" descr="a > b">${creationId}</p:cNvPr>`), 'other attributes and children stay');
+    assert.doesNotMatch(xml, /ShibaSlim|旧作者/);
+
+    const again = (await attributeBuffer(first, { author: '李四', signingKey: false })).output;
+    assert.deepEqual(shapeNames(await (await open(again)).text('ppt/slides/slide1.xml')), [
+      '',
+      'Image 0 · © 李四',
+      '组合 3 · © 李四',
+      'Arrow "up" · © 李四',
+      ' · © 李四',
+      '文本 5 · © 李四',
+      '文本 5 · © 李四',
+    ]);
+    const same = (await attributeBuffer(again, { author: '李四', signingKey: false })).output;
+    assert.equal(await (await open(same)).text('ppt/slides/slide1.xml'), await (await open(again)).text('ppt/slides/slide1.xml'));
   });
 
   test('creates the property parts when a file has none', async () => {

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { OpcPackage, SlimError, XML_HEADER } from './opc.js';
-import { attr, decodeXml, escapeXml, parseXml } from './xml.js';
+import { attr, decodeXml, escapeXml, parseXml, unescapeXml } from './xml.js';
 
 /*
  * Optional attribution: who made a presentation, written where people look for it
@@ -12,9 +12,9 @@ import { attr, decodeXml, escapeXml, parseXml } from './xml.js';
  * - File properties: author and last saver in docProps/core.xml, company in
  *   docProps/app.xml. Explorer's Properties > Details, Finder and PowerPoint's
  *   File > Info read them from there.
- * - Selection pane: a hidden, empty shape named "© year author" on top of every
- *   slide. It is never shown or printed, and animations refer to shapes by id, so
- *   they are unaffected.
+ * - Selection pane: every shape on every slide has " · © author" appended to its
+ *   name. Animations refer to shapes by id and Morph pairs shapes by equal names,
+ *   which all get the same ending, so both are unaffected.
  * - Signature: presentation-level tags (the store PowerPoint keeps for add-ins and
  *   carries over when saving) hold the author, the time, an Ed25519 public key and
  *   a signature over every part of the package. Any later change, including saving
@@ -24,7 +24,7 @@ import { attr, decodeXml, escapeXml, parseXml } from './xml.js';
  */
 
 export interface Attribution {
-  /** Written as the author and last saver in the file's properties, and named on every slide's hidden marker. */
+  /** Written as the author and last saver in the file's properties, and after every shape's name on the slides. */
   author: string;
   /** Written as the company in the file's properties. */
   company?: string;
@@ -77,13 +77,12 @@ const TAG = {
   signature: 'SHIBASLIM_SIGNATURE',
 } as const;
 const OWN_TAG = /^SHIBASLIM_/i;
-/** The marker's alt-text title, so a later run can find and replace it. */
-const MARKER_TITLE = 'ShibaSlim';
+/** The alt-text title of the hidden attribution shape versions up to 0.2.0 added to every slide. */
+const OLD_MARKER_TITLE = 'ShibaSlim';
 
 /** Transitional namespace first, then Strict OOXML. */
 const NS = {
   p: ['http://schemas.openxmlformats.org/presentationml/2006/main', 'http://purl.oclc.org/ooxml/presentationml/main'],
-  a: ['http://schemas.openxmlformats.org/drawingml/2006/main', 'http://purl.oclc.org/ooxml/drawingml/main'],
   r: ['http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'http://purl.oclc.org/ooxml/officeDocument/relationships'],
   tagsRel: [
     'http://schemas.openxmlformats.org/officeDocument/2006/relationships/tags',
@@ -243,7 +242,7 @@ export async function applyAttribution(pkg: OpcPackage, attribution: ResolvedAtt
   const { author, company, key } = attribution;
   await setCoreProperties(pkg, author);
   if (company) await setCompany(pkg, company);
-  await markSlides(pkg, `© ${now.getFullYear()} ${company ? `${author} · ${company}` : author}`);
+  await nameShapes(pkg, author);
   const result: AttributionResult = { author, ...(company ? { company } : {}) };
   if (!key) {
     // A signature from an earlier run would only name the old author and fail to match.
@@ -305,49 +304,57 @@ function setElement(xml: string, rootLocal: string, uris: string[], local: strin
   return replaceAt(xml, selfClosed.index, selfClosed[0].length, `<${selfClosed[1]}${selfClosed[2]}>${element}</${selfClosed[1]}>`);
 }
 
-async function markSlides(pkg: OpcPackage, name: string): Promise<void> {
+async function nameShapes(pkg: OpcPackage, author: string): Promise<void> {
   for (const part of pkg.names()) {
     if (pkg.contentType(part)?.toLowerCase() !== TYPES.slide) continue;
-    const marked = markSlide(await readText(pkg, part), name);
-    if (marked !== null) writeText(pkg, part, marked);
+    const source = await readText(pkg, part);
+    const named = nameSlideShapes(source, author);
+    if (named !== source) writeText(pkg, part, named);
   }
 }
 
 /**
- * Puts a hidden, empty shape named `name` on top of the slide, where the selection pane lists it
- * first, replacing one left by an earlier run. Null if the slide has no shape tree.
+ * Appends " · © author" to the name of every shape on the slide (groups and the shapes in them
+ * included), which is what the selection pane and the animation pane list. A name that already
+ * carries an attribution has it replaced, so running again does not add up. The slide's own root
+ * group is left alone: it is not a shape anyone sees.
  */
-function markSlide(source: string, name: string): string | null {
+function nameSlideShapes(source: string, author: string): string {
   const tree = /<((?:[\w.-]+:)?)spTree(?=[\s>])/.exec(source);
-  if (!tree) return null;
-  const p = tree[1]!;
-  const pe = escapeRe(p);
-  // A <p:sp> never contains another one (groups are <p:grpSp>), so each match is exactly one shape.
-  const xml = source.replace(new RegExp(`<${pe}sp(?=[\\s>])[\\s\\S]*?</${pe}sp\\s*>`, 'g'), (shape) => (isMarker(shape) ? '' : shape));
-  const close = lastMatch(xml, new RegExp(`</${pe}spTree\\s*>`, 'g'));
-  if (!close) return null;
-  let at = close.index!;
-  // The tree's own extension list must stay its last child.
-  if (new RegExp(`</${pe}extLst\\s*>\\s*$`).test(xml.slice(0, at))) {
-    const open = xml.lastIndexOf(`<${p}extLst`, at);
-    if (open > tree.index) at = open;
-  }
-
-  let maxId = 0;
-  for (const m of xml.matchAll(/<(?:[\w.-]+:)?cNvPr(?=[\s/>])[^>]*?\sid\s*=\s*["'](\d+)["']/g)) maxId = Math.max(maxId, Number(m[1]));
-  const aUri = NS.a[uriOf(xml, p) === NS.p[1] ? 1 : 0];
-  const aPrefix = prefixFor(xml, [aUri]);
-  const a = aPrefix ? `${aPrefix}:` : 'a:';
-  const declare = aPrefix ? '' : ` xmlns:a="${aUri}"`;
-  const shape =
-    `<${p}sp${declare}><${p}nvSpPr><${p}cNvPr id="${maxId + 1}" name="${escapeXml(name)}" title="${MARKER_TITLE}" hidden="1"/>` +
-    `<${p}cNvSpPr/><${p}nvPr/></${p}nvSpPr><${p}spPr><${a}xfrm><${a}off x="0" y="0"/><${a}ext cx="0" cy="0"/></${a}xfrm>` +
-    `<${a}prstGeom prst="rect"><${a}avLst/></${a}prstGeom><${a}noFill/><${a}ln><${a}noFill/></${a}ln></${p}spPr></${p}sp>`;
-  return replaceAt(xml, at, 0, shape);
+  if (!tree) return source;
+  const pe = escapeRe(tree[1]!);
+  const head = source.slice(0, tree.index);
+  // Earlier versions put a hidden shape of their own on every slide instead.
+  let body = source
+    .slice(tree.index)
+    .replace(new RegExp(`<${pe}sp(?=[\\s>])[\\s\\S]*?</${pe}sp\\s*>`, 'g'), (shape) => (isOldMarker(shape) ? '' : shape));
+  const root = new RegExp(`^<${pe}spTree(?:${ATTRS})*\\s*>\\s*<${pe}nvGrpSpPr(?:${ATTRS})*\\s*>\\s*`).exec(body);
+  const skip = root ? root[0].length : -1;
+  body = body.replace(CNVPR_RE, (tag: string, prefix: string, attrs: string, close: string, at: number) => {
+    if (at === skip) return tag;
+    const name = NAME_ATTR_RE.exec(attrs);
+    const own = name ? withoutAttribution(unescapeXml(name[1] ?? name[2] ?? '')) : '';
+    const value = ` name="${escapeXml(own + NAME_MARK + author)}"`;
+    const rest = name ? attrs.slice(0, name.index) + value + attrs.slice(name.index + name[0].length) : attrs + value;
+    return `<${prefix}cNvPr${rest}${close}>`;
+  });
+  return head + body;
 }
 
-function isMarker(shape: string): boolean {
-  return new RegExp(`<(?:[\\w.-]+:)?cNvPr(?=[\\s/>])[^>]*?\\stitle\\s*=\\s*["']${MARKER_TITLE}["']`).test(shape);
+/** Separates a shape's own name from the attribution after it; an unnamed shape gets it too, so a later run can find it. */
+const NAME_MARK = ' · © ';
+/** Attributes of a start tag, quoted values allowed to hold ">". */
+const ATTRS = `\\s+[^\\s=/>]+\\s*=\\s*(?:"[^"]*"|'[^']*')`;
+const CNVPR_RE = new RegExp(`<((?:[\\w.-]+:)?)cNvPr((?:${ATTRS})*)\\s*(/?)>`, 'g');
+const NAME_ATTR_RE = /\sname\s*=\s*(?:"([^"]*)"|'([^']*)')/;
+
+function withoutAttribution(name: string): string {
+  const at = name.indexOf(NAME_MARK);
+  return at < 0 ? name : name.slice(0, at);
+}
+
+function isOldMarker(shape: string): boolean {
+  return new RegExp(`<(?:[\\w.-]+:)?cNvPr(?=[\\s/>])[^>]*?\\stitle\\s*=\\s*["']${OLD_MARKER_TITLE}["']`).test(shape);
 }
 
 // ---------- signing ----------
