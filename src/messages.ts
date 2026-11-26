@@ -52,6 +52,7 @@ const zh = {
   'note.format': '不处理 {format} 格式',
   'note.multiFrame': '多帧图片',
   'note.smallEnough': '已足够小',
+  'note.palette': '已是调色板 PNG',
   'note.decodeFailed': '无法解码（{detail}）',
 
   // Theme and language switches, shared by both pages.
@@ -218,6 +219,7 @@ const en: Record<MessageKey, string> = {
   'note.format': '{format} images are not processed',
   'note.multiFrame': 'multi-frame image',
   'note.smallEnough': 'already small enough',
+  'note.palette': 'already a palette PNG',
   'note.decodeFailed': 'could not be decoded ({detail})',
 
   'prefs.theme': 'Theme',

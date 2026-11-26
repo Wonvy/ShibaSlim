@@ -69,6 +69,12 @@ export async function optimizeImage(
     if (orientation >= 5) wanted = Math.max(wanted, need.width / height, need.height / width);
     if (wanted < RESIZE_THRESHOLD) scale = wanted;
   }
+  // A palette PNG has already been through colour reduction, often by this tool. Reducing it again
+  // only stacks error, and whether that "saves" enough to be taken depends on each platform's encoder,
+  // so a second run could keep eroding it. It is only re-encoded when it has to be scaled down.
+  if (meta.format === 'png' && meta.isPalette && scale === 1) {
+    return { status: 'kept', reason: { code: 'note.palette' }, ...unchanged };
+  }
   const newWidth = Math.max(1, Math.round(width * scale));
   const newHeight = Math.max(1, Math.round(height * scale));
   const pipeline = () => {

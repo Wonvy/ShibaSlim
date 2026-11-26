@@ -308,6 +308,18 @@ describe('optimizeImage', () => {
     assert.equal(outcome.status, 'kept');
     assert.equal(outcome.data, undefined);
   });
+
+  test('does not reduce the colours of a palette PNG again, but still scales it down', async () => {
+    // Uncompressed, so re-encoding it would otherwise look like a big saving.
+    const source = await noise(800, 600).png({ palette: true, colours: 64, compressionLevel: 0 }).toBuffer();
+    assert.equal((await sharp(source).metadata()).isPalette, true);
+    const same = await optimizeImage(source, { width: 800, height: 600, noResize: false, noTouch: false }, settings);
+    assert.equal(same.status, 'kept');
+    assert.equal(same.reason?.code, 'note.palette');
+    const smaller = await optimizeImage(source, { width: 400, height: 300, noResize: false, noTouch: false }, settings);
+    assert.equal(smaller.status, 'optimized');
+    assert.deepEqual([smaller.newWidth, smaller.newHeight], [400, 300]);
+  });
 });
 
 describe('cli', () => {
