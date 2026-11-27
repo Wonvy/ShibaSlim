@@ -359,8 +359,13 @@ const NAME_ATTR_RE = /\sname\s*=\s*(?:"([^"]*)"|'([^']*)')/;
  * so names that collected several (copied between files, or signed by other tools) come back to one.
  */
 function withoutAttribution(name: string): string {
+  return splitAttribution(name)[0];
+}
+
+/** A shape's name as its own name and the attribution after it ('' when there is none). */
+export function splitAttribution(name: string): [own: string, attribution: string] {
   const found = ATTRIBUTION_RE.exec(name);
-  return found ? name.slice(0, found.index) : name;
+  return found ? [name.slice(0, found.index), name.slice(found.index)] : [name, ''];
 }
 
 function isOldMarker(shape: string): boolean {
@@ -487,7 +492,7 @@ async function removeSignature(pkg: OpcPackage): Promise<void> {
   writeText(pkg, part, serializeTags((root && uriOf(xml, root[1]!)) ?? NS.p[0], others));
 }
 
-function presentationPart(pkg: OpcPackage): string | null {
+export function presentationPart(pkg: OpcPackage): string | null {
   return pkg.relsOf('')?.rels.find((r) => r.part && /\/officeDocument$/.test(r.type))?.part ?? null;
 }
 
@@ -549,11 +554,11 @@ function cleanName(value: unknown): string {
     .trim();
 }
 
-async function readText(pkg: OpcPackage, part: string): Promise<string> {
+export async function readText(pkg: OpcPackage, part: string): Promise<string> {
   return decodeXml(await pkg.read(part));
 }
 
-function writeText(pkg: OpcPackage, part: string, text: string): void {
+export function writeText(pkg: OpcPackage, part: string, text: string): void {
   // A UTF-16 part was decoded into a string and goes back as UTF-8, so its declaration has to say so.
   const declared = text.replace(/^(<\?xml[^?]*?encoding\s*=\s*["'])[^"']*/, '$1UTF-8');
   pkg.write(part, Buffer.from(declared, 'utf8'));

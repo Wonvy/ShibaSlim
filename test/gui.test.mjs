@@ -294,6 +294,33 @@ describe('gui server', () => {
     assert.equal(malformed.status, 400);
   });
 
+  test('gives results English names when asked, alone (named .en) or along with compressing', async () => {
+    const { data: entry } = await upload('英文.pptx');
+    await call('/api/start', { method: 'POST', body: { compress: false, englishNames: true, ids: [entry.id], clarity: 60, outDir } });
+    const renamed = await waitFor(entry.id);
+    assert.equal(renamed.state, 'done', JSON.stringify(renamed.error));
+    assert.equal(renamed.output, path.join(outDir, '英文.en.pptx'));
+    assert.equal(renamed.result.settings.englishNames, true);
+    assert.ok(renamed.result.names.shapes > 0, JSON.stringify(renamed.result.names));
+    assert.equal(renamed.result.author, undefined);
+    const result = await JSZip.loadAsync(await readFile(renamed.output));
+    const names = [...(await result.file('ppt/slides/slide1.xml').async('string')).matchAll(/<p:cNvPr\b[^>]*\sname="([^"]*)"/g)].map((m) => m[1]);
+    assert.ok(names.includes('Picture 1'), names.join(', '));
+    // Only names changed: the media are the original's, byte for byte.
+    const source = await JSZip.loadAsync(fixture.data);
+    for (const name of Object.keys(source.files).filter((n) => n.startsWith('ppt/media/') && !source.files[n].dir)) {
+      assert.ok((await source.file(name).async('nodebuffer')).equals(await result.file(name).async('nodebuffer')), name);
+    }
+
+    await call('/api/start', { method: 'POST', body: { compress: true, englishNames: true, ids: [entry.id], clarity: 60, outDir } });
+    const both = await waitFor(entry.id);
+    assert.equal(both.state, 'done', JSON.stringify(both.error));
+    assert.equal(both.output, path.join(outDir, '英文.slim.pptx'));
+    assert.deepEqual(both.result.names, renamed.result.names);
+    assert.ok(both.result.after < both.result.before);
+    await call(`/api/files/${entry.id}`, { method: 'DELETE' });
+  });
+
   test('builds a comparison page titled with the original file name', async () => {
     const { data: entry } = await upload('季度汇报.pptx');
     const res = await call(`/api/preview/${entry.id}?t=${server.token}&c=40`, { token: null });

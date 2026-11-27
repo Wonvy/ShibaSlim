@@ -3,10 +3,14 @@ export {
   PRESETS,
   attributeBuffer,
   attributeFile,
+  editBuffer,
+  editFile,
   optimizeBuffer,
   optimizeFile,
   settingsForClarity,
   type AttributeReport,
+  type EditOptions,
+  type EditReport,
   type FileOptions,
   type ImageReport,
   type OptimizeOptions,
@@ -26,6 +30,7 @@ export {
   type SignatureCheck,
   type SignatureStatus,
 } from './attribution.js';
+export { useEnglishNames, type NamesResult } from './names.js';
 export { buildPreview, type PreviewInput } from './preview.js';
 export {
   availableRenderers,

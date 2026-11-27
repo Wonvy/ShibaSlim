@@ -9,22 +9,24 @@ import {
   fingerprint,
   keyFileFingerprint,
   resolveAttribution,
-  type Attribution,
   type ResolvedAttribution,
   type SignatureCheck,
 } from './attribution.js';
 import { describeSettings, formatBytes, percentSaved } from './format.js';
 import { defaultOutDir, openWithSystem, startGui } from './gui.js';
-import { DEFAULT_SUFFIX, SIGNED_SUFFIX, collectInputs, outputPathFor, previewPathFor, type OutputPlan } from './inputs.js';
+import { DEFAULT_SUFFIX, ENGLISH_SUFFIX, SIGNED_SUFFIX, collectInputs, outputPathFor, previewPathFor, type OutputPlan } from './inputs.js';
+import type { NamesResult } from './names.js';
 import { SlimError } from './opc.js';
 import {
   DEFAULT_CLARITY,
-  attributeFile,
+  editFile,
   mapPool,
   optimizeFile,
+  renamedCount,
   resolveSettings,
+  type EditOptions,
+  type EditReport,
   type FileOptions,
-  type AttributeReport,
   type OptimizeReport,
   type PresetName,
 } from './optimize.js';
@@ -51,6 +53,7 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
   shibaslim <文件|目录|通配符 ...> [选项]
   shibaslim gui [--port <端口>] [--no-browser]   打开图形界面（在浏览器里拖入文件）
   shibaslim sign <文件|目录 ...> --author <名字>  只署名、签名，不压缩图片（适合已压缩过的文件）
+  shibaslim names <文件|目录 ...>                图层、版式等改成英文版 PowerPoint 的默认名称，不压缩图片
   shibaslim verify <文件|目录 ...> [-r]          校验署名：签名后文件有没有被改动过
   shibaslim images <文件|目录 ...> [-w 宽度]     把每一页导出成图片（需要 PowerPoint、WPS 或 macOS）
 
@@ -59,6 +62,7 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
   shibaslim 汇报.pptx -c 40 -n --preview   试试清晰度 40：只生成对比页面，不写 pptx
   shibaslim ./课件 -r -o ./课件-压缩版      递归处理整个目录，输出到另一个目录
   shibaslim 汇报.pptx --author 张三         压缩并署名、签名
+  shibaslim names 汇报.pptx                生成 汇报.en.pptx：中文版做的文件，图层名改成英文版的
 
 清晰度:
   -c, --clarity <1-100>   数值越高越清晰、文件越大，默认 ${DEFAULT_CLARITY}
@@ -84,6 +88,12 @@ const HELP = `ShibaSlim - 批量压缩 PPTX 体积（重点压缩内嵌图片）
       --no-sign           只写署名，不签名
                           已经压缩过、只想署名的文件，用 shibaslim sign
                           本机密钥保存在 ${defaultKeyPath()}
+
+英文名称（可选）:
+      --english-names     把每个图层的名字改成英文版 PowerPoint 的默认名称（矩形: 圆角 5 →
+                          Rectangle: Rounded Corners 5），幻灯片、版式、母版、备注里的都改，
+                          同一页内不重名；默认的版式名、主题名和节名也换成英文
+                          只改名称、不压缩，用 shibaslim names
 
 高级（单独覆盖清晰度算出的某一项）:
       --ppi <数值>        图片按显示尺寸保留的像素密度
@@ -133,7 +143,17 @@ function describe(report: OptimizeReport): string {
   if (report.orphansRemoved > 0) parts.push(`清理无用媒体 ${report.orphansRemoved}`);
   if (report.thumbnailRemoved) parts.push('已删缩略图');
   if (report.attribution) parts.push(report.attribution.fingerprint ? '已署名并签名' : '已署名');
+  if (report.names) parts.push(namesText(report.names));
   return parts.join('，');
+}
+
+function namesText(names: NamesResult): string {
+  if (renamedCount(names) === 0) return '名称已经是英文';
+  const parts = [`图层 ${names.shapes}`];
+  if (names.layouts > 0) parts.push(`版式 ${names.layouts}`);
+  if (names.themes > 0) parts.push(`主题 ${names.themes}`);
+  if (names.sections > 0) parts.push(`节 ${names.sections}`);
+  return `改为英文名：${parts.join('、')}`;
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -224,6 +244,7 @@ const SIGN_HELP = `用法: shibaslim sign <文件|目录|通配符 ...> --author
       --company <名称>    同时写入文件属性里的公司
       --sign-key <文件>   改用这个 Ed25519 私钥（PEM 格式）签名
       --no-sign           只写署名，不签名
+      --english-names     同时把图层、版式等改成英文版 PowerPoint 的默认名称（见 shibaslim names -h）
 
 输出:
   -o, --out-dir <目录>    输出目录（保持原文件名与子目录结构）
@@ -238,14 +259,47 @@ const SIGN_HELP = `用法: shibaslim sign <文件|目录|通配符 ...> --author
 
 本机密钥保存在 ${defaultKeyPath()}`;
 
-interface SignResult {
+const NAMES_HELP = `用法: shibaslim names <文件|目录|通配符 ...> [选项]
+
+把名称改成英文版 PowerPoint 的默认名称，图片和其他内容原样保留：在中文版 PowerPoint 里做的文件，
+别人用英文版打开，选择窗格里看到的就和英文版做的一样。默认在原文件旁边生成 <名称>${ENGLISH_SUFFIX}.pptx。
+
+改哪些:
+  图层    幻灯片、版式、母版和备注页上的每个图层（包括组合里的）。PowerPoint 起的名字直接翻译，
+          编号不变（矩形: 圆角 5 → Rectangle: Rounded Corners 5，灯片编号占位符 4 → Slide Number
+          Placeholder 4）；自己起的名字换成这类图层的默认名称。同一页内不会有两个同名的图层
+  版式    默认的版式名（1_标题幻灯片 → 1_Title Slide）；自己起的版式名不变
+  主题    Office 主题 → Office Theme（母版视图里显示的母版名称）
+  节      默认节 → Default Section，无标题节 → Untitled Section
+  以 !! 开头的图层名是给平滑切换配对用的，保持不变；动画按图层编号关联，不受影响。
+
+示例:
+  shibaslim names 汇报.pptx                生成 汇报${ENGLISH_SUFFIX}.pptx
+  shibaslim names ./课件 -r --in-place     直接改写整个目录里的文件
+
+输出:
+  -o, --out-dir <目录>    输出目录（保持原文件名与子目录结构）
+      --suffix <后缀>     输出文件名后缀，默认 ${ENGLISH_SUFFIX}；指定 --out-dir 时默认不加
+      --in-place          直接改写原文件（只改名称，图片不受影响）
+
+其他:
+  -r, --recursive         递归处理子目录
+  -j, --jobs <n>          同时处理的文件数，默认 1
+      --json              以 JSON 输出结果
+  -h, --help              显示帮助
+
+同时压缩，用 shibaslim <文件> --english-names；同时署名，用 shibaslim sign --author <名字> --english-names。`;
+
+interface EditResult {
   input: string;
   output: string | null;
-  report?: AttributeReport;
+  report?: EditReport;
   error?: string;
 }
 
-async function runSign(argv: string[]): Promise<number> {
+/** shibaslim sign (attribution, optionally English names) and shibaslim names (English names only): no compression. */
+async function runEdit(argv: string[], command: 'sign' | 'names'): Promise<number> {
+  const signing = command === 'sign';
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -254,6 +308,7 @@ async function runSign(argv: string[]): Promise<number> {
       company: { type: 'string' },
       'sign-key': { type: 'string' },
       'no-sign': { type: 'boolean' },
+      'english-names': { type: 'boolean' },
       'out-dir': { type: 'string', short: 'o' },
       suffix: { type: 'string' },
       'in-place': { type: 'boolean' },
@@ -264,14 +319,22 @@ async function runSign(argv: string[]): Promise<number> {
     },
   });
   if (values.help || positionals.length === 0) {
-    console.log(SIGN_HELP);
+    console.log(signing ? SIGN_HELP : NAMES_HELP);
     return values.help ? 0 : 2;
   }
-  if (values.author === undefined) throw new UsageError('shibaslim sign 需要用 --author 指定作者');
-  const plan = outputPlan(values, SIGNED_SUFFIX);
+  if (signing && values.author === undefined) throw new UsageError('shibaslim sign 需要用 --author 指定作者');
+  if (!signing) {
+    const extra = (['author', 'company', 'sign-key', 'no-sign'] as const).find((name) => values[name] !== undefined);
+    if (extra) throw new UsageError(`shibaslim names 不署名，没有 --${extra}；要同时署名，用 shibaslim sign --author <名字> --english-names`);
+  }
+  const plan = outputPlan(values, signing ? SIGNED_SUFFIX : ENGLISH_SUFFIX);
   const jobs = Math.max(1, Math.floor(numberOption('jobs', values.jobs) ?? 1));
-  const attribution = (await attributionOption(values))!;
-  const options: Attribution = { author: attribution.author, company: attribution.company, signingKey: attribution.key ?? false };
+  const attribution = signing ? (await attributionOption(values))! : null;
+  const englishNames = !signing || (values['english-names'] ?? false);
+  const options: EditOptions = {
+    ...(attribution ? { attribution: { author: attribution.author, company: attribution.company, signingKey: attribution.key ?? false } } : {}),
+    englishNames,
+  };
 
   const human = !values.json;
   const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, plan.skipSuffix, plan.outDir);
@@ -280,17 +343,21 @@ async function runSign(argv: string[]): Promise<number> {
     console.error('没有可处理的 pptx 文件。');
     return 1;
   }
-  if (human) console.log(dim(attributionLine(attribution)));
+  if (human && attribution) console.log(dim(attributionLine(attribution)));
 
-  const results = await mapPool(items, jobs, async (item): Promise<SignResult> => {
+  const results = await mapPool(items, jobs, async (item): Promise<EditResult> => {
     const label = path.relative(process.cwd(), item.file) || item.file;
     const output = outputPathFor(item, plan);
     try {
       if (!plan.inPlace && path.resolve(output) === item.file) throw new SlimError('error.samePath');
-      const report = await attributeFile(item.file, output, options);
+      const report = await editFile(item.file, output, options);
       if (human) {
         const target = plan.inPlace ? '' : `  ${dim('→ ' + (path.relative(process.cwd(), output) || output))}`;
-        console.log(`${green(MARK.ok)} ${label}${target}  ${report.attribution.fingerprint ? '已署名并签名' : '已署名'}`);
+        const done = [
+          ...(report.attribution ? [report.attribution.fingerprint ? '已署名并签名' : '已署名'] : []),
+          ...(report.names ? [namesText(report.names)] : []),
+        ];
+        console.log(`${green(MARK.ok)} ${label}${target}  ${done.join('，')}`);
       }
       return { input: item.file, output, report };
     } catch (err) {
@@ -303,7 +370,8 @@ async function runSign(argv: string[]): Promise<number> {
   const failed = results.filter((r) => r.error).length;
   if (human) {
     const failNote = failed > 0 ? red(`，${failed} 个失败`) : '';
-    console.log(`\n共 ${results.length} 个文件${failNote}；只加了署名，图片没有改动`);
+    const what = attribution && englishNames ? '只加了署名、改了名称' : attribution ? '只加了署名' : '只改了名称';
+    console.log(`\n共 ${results.length} 个文件${failNote}；${what}，图片没有改动`);
   } else {
     console.log(JSON.stringify(results, null, 2));
   }
@@ -554,7 +622,8 @@ async function runGui(argv: string[]): Promise<number> {
 async function main(): Promise<number> {
   if (process.argv[2] === 'gui') return runGui(process.argv.slice(3));
   if (process.argv[2] === 'verify') return runVerify(process.argv.slice(3));
-  if (process.argv[2] === 'sign') return runSign(process.argv.slice(3));
+  if (process.argv[2] === 'sign') return runEdit(process.argv.slice(3), 'sign');
+  if (process.argv[2] === 'names') return runEdit(process.argv.slice(3), 'names');
   if (process.argv[2] === 'images') return runImages(process.argv.slice(3));
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -572,6 +641,7 @@ async function main(): Promise<number> {
       company: { type: 'string' },
       'sign-key': { type: 'string' },
       'no-sign': { type: 'boolean' },
+      'english-names': { type: 'boolean' },
       'out-dir': { type: 'string', short: 'o' },
       suffix: { type: 'string' },
       'in-place': { type: 'boolean' },
@@ -624,6 +694,7 @@ async function main(): Promise<number> {
   if (attribution) {
     options.attribution = { author: attribution.author, company: attribution.company, signingKey: attribution.key ?? false };
   }
+  if (values['english-names']) options.englishNames = true;
 
   const human = !values.json;
   const { items, unmatched } = await collectInputs(positionals, values.recursive ?? false, plan.skipSuffix, outDir);
@@ -637,6 +708,7 @@ async function main(): Promise<number> {
     const note = dryRun ? '（试运行，不写 pptx）' : '';
     console.log(dim(`清晰度 ${settings.clarity}（${describeSettings(settings)}）${note}`));
     if (attribution) console.log(dim(attributionLine(attribution)));
+    if (options.englishNames) console.log(dim('图层、版式等改成英文版 PowerPoint 的默认名称'));
   }
 
   const showStatus = human && useColor && jobs === 1;
@@ -659,7 +731,7 @@ async function main(): Promise<number> {
         const detail = dim(`（${describe(report)}）`);
         if (report.changed) {
           const sizes = `${formatBytes(report.before)} → ${formatBytes(report.after)}`;
-          // Attribution is written even when the images had nothing left to give, which can add a little.
+          // Attribution and names are written even when the images had nothing left to give, which can add a little.
           const delta =
             report.after < report.before
               ? green('-' + percentSaved(report.before, report.after))
@@ -686,10 +758,11 @@ async function main(): Promise<number> {
     const before = done.reduce((sum, r) => sum + r.report!.before, 0);
     const after = done.reduce((sum, r) => sum + r.report!.after, 0);
     const failNote = failed > 0 ? red(`，${failed} 个失败`) : '';
+    const why = attribution && options.englishNames ? '署名和改名' : attribution ? '署名' : '改名';
     const saving =
       after < before
         ? `${dryRun ? '可节省' : '节省'} ${formatBytes(before - after)}（${percentSaved(before, after)}）`
-        : `增加 ${formatBytes(after - before)}（署名）`;
+        : `增加 ${formatBytes(after - before)}（${why}）`;
     console.log(`\n共 ${results.length} 个文件${failNote}：${formatBytes(before)} → ${formatBytes(after)}，${saving}`);
   } else {
     console.log(JSON.stringify(results, null, 2));

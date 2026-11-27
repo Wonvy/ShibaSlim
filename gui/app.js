@@ -21,6 +21,7 @@ const el = {
   presets: document.querySelectorAll('[data-clarity]'),
   taskCompress: document.getElementById('task-compress'),
   taskSign: document.getElementById('task-sign'),
+  taskNames: document.getElementById('task-names'),
   taskImages: document.getElementById('task-images'),
   compressFields: document.getElementById('compress-fields'),
   place: document.getElementById('place'),
@@ -62,7 +63,7 @@ const state = {
   /** Index = clarity; { ppi, jpegQuality, pngQuality } from the server. */
   claritySettings: [],
   /** What Start does to each file; any combination of the three. */
-  tasks: { compress: true, sign: false, images: false },
+  tasks: { compress: true, sign: false, names: false, images: false },
   clarity: 60,
   /**
    * Where results go (Place in src/gui.ts): 'beside' a ShibaSlim folder next to each file, the 'same'
@@ -206,6 +207,7 @@ function renderSettings() {
   const { tasks } = state;
   el.taskCompress.checked = tasks.compress;
   el.taskSign.checked = tasks.sign;
+  el.taskNames.checked = tasks.names;
   el.taskImages.checked = tasks.images;
   el.compressFields.hidden = !tasks.compress;
   el.signFields.hidden = !tasks.sign;
@@ -255,6 +257,8 @@ function hintText(name) {
       return clarityDetail();
     case 'sign':
       return t('gui.sign.hint');
+    case 'names':
+      return t('gui.names.hint');
     case 'images':
       return t('gui.images.hint');
     case 'save':
@@ -291,6 +295,7 @@ function currentSettings() {
     compress: state.tasks.compress,
     clarity: state.tasks.compress ? state.clarity : null,
     attribution: attribution(),
+    englishNames: state.tasks.names,
     images: imagesOn() ? pictureSettings() : null,
     outDir: state.outDir,
     place: placeNow(),
@@ -299,7 +304,7 @@ function currentSettings() {
 
 /** Says what is missing before anything is sent, and puts the cursor there; true when all is well. */
 function checkSettings(settings, { needTask = true } = {}) {
-  if (needTask && !settings.compress && !settings.attribution && !settings.images) {
+  if (needTask && !settings.compress && !settings.attribution && !settings.englishNames && !settings.images) {
     toast(t('error.noTask'));
     return false;
   }
@@ -354,6 +359,7 @@ function isStale(file) {
   const a = done.attribution;
   const b = now.attribution;
   if (Boolean(a) !== Boolean(b) || (a && (cleanName(a.author) !== b.author || cleanName(a.company) !== b.company))) return true;
+  if (Boolean(done.englishNames) !== now.englishNames) return true;
   const p = done.images;
   const q = now.images;
   if (Boolean(p) !== Boolean(q) || (p && (p.width !== q.width || p.format !== q.format || p.pages !== q.pages))) return true;
@@ -434,6 +440,7 @@ function metaText(file) {
       if (!a) return t('gui.meta.working', { size });
       if (a.kind === 'images') return a.total > 0 ? t('gui.meta.drawingCount', { size, done: a.done, total: a.total }) : t('gui.meta.drawing', { size });
       if (a.kind === 'sign') return t('gui.meta.signing', { size });
+      if (a.kind === 'names') return t('gui.meta.renaming', { size });
       if (a.kind === 'pack') return t('gui.meta.packing', { size });
       return t('gui.meta.running', { size, pct: a.total > 0 ? Math.round((a.done / a.total) * 100) : 0 });
     }
@@ -449,6 +456,7 @@ function metaText(file) {
         else if (!r.changed) parts.push(t('gui.meta.unchanged', { size }));
         else parts.push(`${formatBytes(r.before)} → ${formatBytes(r.after)}`);
         if (r.author) parts.push(t('gui.meta.short.signed'));
+        if (r.names) parts.push(t('gui.meta.short.named'));
         if (file.local && r.settings.place === 'replace') parts.push(t('gui.meta.short.replaced'));
       }
       if (r.pictures) parts.push(t('gui.meta.short.pictures', { n: r.pictures.count }));
@@ -465,18 +473,21 @@ function doneDetail(file) {
   const size = formatBytes(file.size);
   const lines = [];
   if (r.before !== undefined) {
-    if (!r.settings.compress) lines.push(t('gui.meta.signedOnly', { size: formatBytes(r.after), author: r.author }));
-    else if (!r.changed) lines.push(t('gui.meta.unchanged', { size }));
+    let line;
+    if (!r.settings.compress) line = t('gui.meta.editedOnly', { size: formatBytes(r.after) });
+    else if (!r.changed) line = t('gui.meta.unchanged', { size });
     else {
-      const done = t('gui.meta.done', {
+      line = t('gui.meta.done', {
         before: formatBytes(r.before),
         after: formatBytes(r.after),
         optimized: r.optimized,
         images: r.images,
         clarity: r.settings.clarity,
       });
-      lines.push(r.author ? done + t('gui.meta.signed', { author: r.author }) : done);
     }
+    if (r.author) line += t('gui.meta.signed', { author: r.author });
+    if (r.names) line += t('gui.meta.named', { n: r.names.shapes });
+    lines.push(line);
   }
   if (r.pictures) {
     lines.push(t('gui.meta.picturesDetail', { n: r.pictures.count, renderer: { t: `gui.renderer.${r.pictures.renderer}` } }));
@@ -569,13 +580,13 @@ function renderSummary() {
   else el.summary.innerHTML = html;
 
   const settings = currentSettings();
-  const anyTask = settings.compress || Boolean(settings.attribution) || Boolean(settings.images);
+  const anyTask = settings.compress || Boolean(settings.attribution) || settings.englishNames || Boolean(settings.images);
   el.start.textContent = t(active ? 'gui.stop' : 'gui.start');
   el.start.classList.toggle('stop', active);
   el.start.disabled = !active && (!anyTask || !files.some(needsWork));
   el.clear.disabled = files.length === 0 || files.every((f) => f.state === 'running' || f.state === 'uploading');
   // Settings stay as they are while files are being worked on.
-  const controls = [el.clarity, ...el.presets, el.taskCompress, el.taskSign, el.taskImages, el.place];
+  const controls = [el.clarity, ...el.presets, el.taskCompress, el.taskSign, el.taskNames, el.taskImages, el.place];
   controls.push(el.signAuthor, el.signCompany, el.imageWidth, el.imageWidthCustom, el.imageFormat, el.imagePages, el.pagesList);
   for (const control of controls) control.disabled = active;
 }
@@ -857,7 +868,7 @@ el.start.addEventListener('click', async () => {
     const settings = currentSettings();
     if (!checkSettings(settings)) return;
     // Writing over the originals is asked about every time, naming the files.
-    const replacing = settings.place === 'replace' && (settings.compress || settings.attribution);
+    const replacing = settings.place === 'replace' && (settings.compress || settings.attribution || settings.englishNames);
     const originals = replacing ? ids.map((id) => state.files.get(id)).filter((f) => f && f.local) : [];
     if (originals.length > 0 && !(await confirmReplace(originals))) return;
     await api('/api/start', { method: 'POST', body: { ids, ...settings, confirmed: originals.length > 0 } });
@@ -915,6 +926,7 @@ el.taskSign.addEventListener('change', () => {
   setTasks({ sign: el.taskSign.checked });
   if (el.taskSign.checked && !cleanName(state.sign.author)) el.signAuthor.focus();
 });
+el.taskNames.addEventListener('change', () => setTasks({ names: el.taskNames.checked }));
 el.taskImages.addEventListener('change', () => setTasks({ images: el.taskImages.checked }));
 el.signAuthor.addEventListener('input', () => setSign({ author: el.signAuthor.value }));
 el.signCompany.addEventListener('input', () => setSign({ company: el.signCompany.value }));
@@ -1078,9 +1090,9 @@ async function init() {
   };
   const tasks = saved.tasks && typeof saved.tasks === 'object' ? saved.tasks : null;
   state.tasks = tasks
-    ? { compress: tasks.compress === true, sign: tasks.sign === true, images: tasks.images === true }
+    ? { compress: tasks.compress === true, sign: tasks.sign === true, names: tasks.names === true, images: tasks.images === true }
     : // Settings saved by 0.3.0 and earlier: an attribution switch with an "attribution only" option.
-      { compress: !(sign.on === true && sign.only === true), sign: sign.on === true, images: false };
+      { compress: !(sign.on === true && sign.only === true), sign: sign.on === true, names: false, images: false };
   const images = saved.images && typeof saved.images === 'object' ? saved.images : {};
   const width = Math.round(Number(images.width));
   state.images = {

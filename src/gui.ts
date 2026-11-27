@@ -11,10 +11,11 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { checkSignature, defaultKeyPath, keyFileFingerprint, loadOrCreateKey, resolveAttribution, type SignatureStatus } from './attribution.js';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
-import { collectInputs, DEFAULT_SUFFIX, EXT_RE, SIGNED_SUFFIX, type InputItem } from './inputs.js';
+import { collectInputs, DEFAULT_SUFFIX, ENGLISH_SUFFIX, EXT_RE, SIGNED_SUFFIX, type InputItem } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
 import { OpcPackage, SlimError } from './opc.js';
-import { attributeFile, optimizeFile, thumbnailOf, type AttributeReport, type OptimizeReport } from './optimize.js';
+import type { NamesResult } from './names.js';
+import { editFile, optimizeFile, thumbnailOf, type EditReport, type OptimizeReport } from './optimize.js';
 import { checkRenderOptions, chooseRenderers, parsePageList, renderSlides, SLIDES_SUFFIX, type ImageFormat, type RendererName } from './render.js';
 
 /** This engine's version, shown next to the app name (the desktop app's own version wins when given). */
@@ -81,7 +82,7 @@ interface Entry {
   state: State;
   progress: number;
   /** What a running file is doing, for its status line. */
-  activity?: { kind: 'compress' | 'pack' | 'sign' | 'images'; done: number; total: number };
+  activity?: { kind: 'compress' | 'pack' | 'sign' | 'names' | 'images'; done: number; total: number };
   result?: Result;
   /** The presentation written, when one was. */
   output?: string;
@@ -118,6 +119,8 @@ interface Settings {
   clarity: number | null;
   /** Set when attributing; an attribution without compressing leaves the images as they are. */
   attribution: { author: string; company: string } | null;
+  /** Give shapes, layouts, themes and sections the names English PowerPoint would. */
+  englishNames: boolean;
   /** Set when saving slides as pictures; `pages` is 'all', 'cover' or a list such as "1-3, 5". */
   images: { width: number; format: ImageFormat; pages: string } | null;
   outDir: string;
@@ -147,6 +150,8 @@ interface Result {
   author?: string;
   company?: string;
   signed?: boolean;
+  /** What was renamed, when English names were asked for. */
+  names?: NamesResult;
   /** The slide pictures, when they were saved. */
   pictures?: { dir: string; count: number; renderer: RendererName; failed: RendererName[] };
 }
@@ -276,14 +281,14 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   }
 
   /**
-   * Does what a job asks, in order: writes the compressed and/or attributed presentation, then saves
+   * Does what a job asks, in order: writes the compressed, attributed and/or renamed presentation, then saves
    * the slides as pictures (drawn from the original, which has the sharpest images). `result` collects
    * what is done, so a failure in the pictures keeps the presentation that was written.
    */
   async function runJob(entry: Entry, job: Job, result: Result): Promise<void> {
     const { settings } = job;
     const place = placeFor(entry, settings);
-    const writes = settings.compress || settings.attribution !== null;
+    const writes = settings.compress || settings.attribution !== null || settings.englishNames;
     const replacing = writes && settings.place === 'replace' && entry.origin !== undefined;
     // The pictures are drawn from the original, which replacing is about to overwrite.
     const original = replacing && settings.images ? await readFile(entry.source) : null;
@@ -301,15 +306,18 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (writes) {
-      const output = replacing ? entry.origin! : await claimOutput(entry, place, settings.compress ? DEFAULT_SUFFIX : SIGNED_SUFFIX);
+      const suffix = settings.compress ? DEFAULT_SUFFIX : settings.attribution ? SIGNED_SUFFIX : ENGLISH_SUFFIX;
+      const output = replacing ? entry.origin! : await claimOutput(entry, place, suffix);
       const attribution = settings.attribution && { ...settings.attribution, signingKey: await loadOrCreateKey(keyFile) };
-      if (!settings.compress && attribution) {
-        report({ kind: 'sign', done: 0, total: 1 }, 0);
-        Object.assign(result, signedSummary(await attributeFile(entry.source, output, attribution)));
+      const { englishNames } = settings;
+      if (!settings.compress) {
+        report({ kind: attribution ? 'sign' : 'names', done: 0, total: 1 }, 0);
+        Object.assign(result, editedSummary(await editFile(entry.source, output, { ...(attribution ? { attribution } : {}), englishNames })));
       } else {
         const optimized = await optimizeFile(entry.source, output, {
           clarity: settings.clarity ?? DEFAULT_CLARITY,
           ...(attribution ? { attribution } : {}),
+          englishNames,
           onProgress: ({ done, total }) =>
             report({ kind: done === total ? 'pack' : 'compress', done, total }, share * (total === 0 ? 0.9 : (done / total) * 0.9)),
         });
@@ -356,8 +364,8 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
 
   /**
    * Picks the output file for an entry: its name with .slim added (汇报.pptx -> 汇报.slim.pptx), or
-   * .signed when it is only attributed, so a result can never be mistaken for its original, and
-   * never a file this session did not write.
+   * .signed when it is only attributed, or .en when it only has English names, so a result can never
+   * be mistaken for its original, and never a file this session did not write.
    */
   async function claimOutput(entry: Entry, desired: string, suffix: string): Promise<string> {
     const { dir, name, ext } = path.parse(desired);
@@ -474,7 +482,11 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         const top = path.basename(given);
         const { items } = await collectInputs([given], true, DEFAULT_SUFFIX, undefined);
         found = items
-          .filter((item) => !item.rel.split('/').slice(0, -1).includes(RESULTS_FOLDER) && !path.parse(item.file).name.endsWith(SIGNED_SUFFIX))
+          .filter((item) => {
+            const { name } = path.parse(item.file);
+            if (name.endsWith(SIGNED_SUFFIX) || name.endsWith(ENGLISH_SUFFIX)) return false;
+            return !item.rel.split('/').slice(0, -1).includes(RESULTS_FOLDER);
+          })
           .map((item) => ({ file: item.file, rel: top ? `${top}/${item.rel}` : item.rel }));
       } else if (info?.isFile()) {
         const name = path.basename(given);
@@ -813,10 +825,11 @@ function compressedSummary(report: OptimizeReport): Partial<Result> {
     images: report.images.length,
     ...(attributed ? { author: attributed.author, signed: Boolean(attributed.fingerprint) } : {}),
     ...(attributed?.company ? { company: attributed.company } : {}),
+    ...(report.names ? { names: report.names } : {}),
   };
 }
 
-function signedSummary(report: AttributeReport): Partial<Result> {
+function editedSummary(report: EditReport): Partial<Result> {
   const { attribution } = report;
   return {
     before: report.before,
@@ -824,9 +837,9 @@ function signedSummary(report: AttributeReport): Partial<Result> {
     changed: true,
     optimized: 0,
     images: 0,
-    author: attribution.author,
-    ...(attribution.company ? { company: attribution.company } : {}),
-    signed: Boolean(attribution.fingerprint),
+    ...(attribution ? { author: attribution.author, signed: Boolean(attribution.fingerprint) } : {}),
+    ...(attribution?.company ? { company: attribution.company } : {}),
+    ...(report.names ? { names: report.names } : {}),
   };
 }
 
@@ -870,18 +883,22 @@ async function parseSettings(body: Record<string, unknown>): Promise<{ settings:
     if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
   }
   const attribution = await parseAttribution(body.attribution);
+  const englishNames = body.englishNames === true;
   const images = parseImages(body.images);
-  if (!compress && !attribution && !images) throw new HttpError(400, 'error.noTask');
+  if (!compress && !attribution && !englishNames && !images) throw new HttpError(400, 'error.noTask');
   // Say at once when nothing here can draw slides, rather than on every file.
   if (images) await badRequest(() => chooseRenderers());
   const outDir = validateDir(body.outDir);
   const place = parsePlace(body.place);
   // The page asks before anything is written over the originals; never do it without that.
-  if (place === 'replace' && (compress || attribution) && body.confirmed !== true) throw new HttpError(400, 'error.replaceUnconfirmed');
+  if (place === 'replace' && (compress || attribution || englishNames) && body.confirmed !== true) {
+    throw new HttpError(400, 'error.replaceUnconfirmed');
+  }
   const settings: Settings = {
     compress,
     clarity,
     attribution,
+    englishNames,
     images: images && { width: images.width, format: images.format, pages: images.pages },
     outDir,
     place,

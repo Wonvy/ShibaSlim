@@ -41,6 +41,7 @@
 - **Online updates**: the desktop app looks for a new version when it starts; one click downloads it, installs it and reopens the app.
 - **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
 - **Your files are safe**: originals are left alone by default and results are saved as new files; the graphical interface never overwrites an existing file. Every result is re-read and checked before it is written.
+- **English layer names**: renames the shapes, layouts and masters of a deck made with PowerPoint in Chinese to what English PowerPoint calls them, with no two alike on a slide, so it opens as if it had been made in English.
 - **Optional attribution**: writes the author and company into the file properties, appends it to the name of every shape in the selection pane, and signs the result with this computer's key, so you can later check whether a file changed after signing.
 - **Runs locally**: nothing is uploaded to the internet. Works on macOS, Windows and Linux.
 
@@ -88,7 +89,7 @@ Then open the interface either way:
 The ShibaSlim page opens in your browser:
 
 1. Drag PowerPoint files or whole folders onto the page, or use **Choose files** / **Choose folder**. Folders are added with all their sub-folders.
-2. Tick any combination of **Compress images**, **Add attribution** and **Save slides as pictures**: pictures alone, say, or compressing and attributing together. Each one's settings sit beside it, and fold away while it is unticked.
+2. Tick any combination of **Compress images**, **Add attribution**, **English layer names** and **Save slides as pictures**: pictures alone, say, or compressing and attributing together. Each one's settings sit beside it, and fold away while it is unticked.
 3. When compressing, move the **Clarity** slider, or pick **Small**, **Everyday** or **High**. To check the result first, click **Compare** next to a file; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
 
@@ -122,12 +123,12 @@ project/
 |---|---|
 | A ShibaSlim folder next to each file (default) | As above |
 | The folder each file is in | Next to the original: `report.slim.pptx`, `report-slides/` |
-| Replace the original files | Compressed and attributed results are written over the originals, keeping their names; pictures go in `report-slides/` next to them. **Every time you click Start, a dialog lists the files to be overwritten and asks first**; it cannot be undone. Saving only pictures changes no original and asks nothing |
+| Replace the original files | Compressed, attributed and renamed results are written over the originals, keeping their names; pictures go in `report-slides/` next to them. **Every time you click Start, a dialog lists the files to be overwritten and asks first**; it cannot be undone. Saving only pictures changes no original and asks nothing |
 | This folder | Every result in the chosen folder; dropped folders keep their structure |
 
 The browser version (`shibaslim gui`) cannot learn where a file came from, so it always saves to a folder, `Downloads/ShibaSlim` by default.
 
-Compressed results get `.slim` added to their names (`report.pptx` → `report.slim.pptx`) and attributed-only ones `.signed`, so they cannot be mixed up with the originals. If a file of that name is already there, the result is saved as `report.slim (2).pptx`; existing files are never overwritten.
+Compressed results get `.slim` added to their names (`report.pptx` → `report.slim.pptx`) attributed-only ones `.signed` and renamed-only ones `.en`, so they cannot be mixed up with the originals. If a file of that name is already there, the result is saved as `report.slim (2).pptx`; existing files are never overwritten.
 
 > [!NOTE]
 > The page is served only on `127.0.0.1` and its address carries a one-time access token, so other computers and other websites cannot reach it. Dropped files are copied to the system temp folder and deleted when you quit. Click **Quit** at the top right when you are done, or simply close the terminal window.
@@ -238,6 +239,25 @@ Copy this file along when you move to another computer, so your signatures still
 > [!IMPORTANT]
 > Attribution records; it does not protect. PowerPoint's Inspect Document removes file properties in one click, shapes can be renamed back by hand, and anyone who unzips the file can delete the tags. A valid signature shows that the file has not changed since it was signed with a particular key, not who signed it: anyone can sign a copy with a key of their own. If you need the "signed" status that Office itself recognises, add a digital signature in PowerPoint (Protect Presentation → Add a Digital Signature) after compressing.
 
+## English layer names (optional)
+
+A deck made with PowerPoint in Chinese lists its shapes as “矩形 5” and “文本框 3” in the selection pane, its layouts as “标题幻灯片” and its master as “Office 主题”. Before handing it to someone who uses PowerPoint in English, tick **English layer names** in the interface, or use `shibaslim names` (or `--english-names` while compressing). These names become the ones English PowerPoint gives, so the deck opens as if it had been made in English:
+
+| What | For example |
+|---|---|
+| Every shape on slides, layouts, masters and notes pages, in groups too | `矩形: 圆角 5` → `Rectangle: Rounded Corners 5`, `任意多边形: 形状 12` → `Freeform: Shape 12`, `灯片编号占位符 4` → `Slide Number Placeholder 4` |
+| Default layout names | `1_标题幻灯片` → `1_Title Slide`, `自定义版式` → `Custom Layout` |
+| Themes (what Slide Master view calls a master) | `Office 主题` → `Office Theme` |
+| Sections | `默认节` → `Default Section`, `无标题节` → `Untitled Section` |
+
+- Names PowerPoint gave are translated and **keep their number**.
+- Names someone chose (“背景”, “Logo”) become the default for that kind of shape, numbered from the shape's id the way PowerPoint numbers them. A name copied to several slides becomes the same new name on each.
+- **No two shapes on a slide end up with the same name**: of shapes that were copied and pasted under one name, the later ones get another number. Layouts and masters likewise.
+- Names starting with `!!`, which Morph uses to pair shapes on purpose, stay as they are.
+- Layout and theme names someone chose (“Cover”, “淡蓝”) have no English default to go back to and stay. Text on the slides is not translated, and neither are prompts like “单击此处编辑母版标题样式” on masters, which are text too.
+
+Only names change: no shapes are added or removed, so slide shows and printouts look exactly the same, and animations, which refer to shapes by id, are unaffected. With attribution on as well, the attribution goes after the new names. Macros in a `.pptm` that look shapes up by name no longer find them once they are renamed, so check such files first. Results that were only renamed get `.en` in their name (`report.en.pptx`).
+
 ## Command line
 
 ```bash
@@ -265,6 +285,9 @@ shibaslim report.pptx --author "Jane Doe" --company "Shiba Studio"
 
 # Attribute a file you compressed earlier, leaving its images alone (writes report.slim.signed.pptx)
 shibaslim sign report.slim.pptx --author "Jane Doe"
+
+# Give a deck made in Chinese PowerPoint the names English PowerPoint would (writes report.en.pptx)
+shibaslim names report.pptx
 
 # Check the signature: has the file changed since it was signed?
 shibaslim verify report.slim.pptx
@@ -296,6 +319,7 @@ When scanning folders, Office lock files starting with `~$` and earlier `*.slim.
 | `--company <name>` | Also write the company into the file properties |
 | `--sign-key <file>` | Sign with this Ed25519 private key (PEM) instead |
 | `--no-sign` | Attribute without signing |
+| `--english-names` | Also use English layer names; see [English layer names](#english-layer-names-optional) |
 
 Advanced options override one value derived from the clarity; you will rarely need them:
 
@@ -307,7 +331,7 @@ Advanced options override one value derived from the clarity; you will rarely ne
 | `--keep-png` | Never convert PNG to JPEG |
 | `--strip-thumbnail` | Remove the preview thumbnail shown by file managers |
 
-Exit codes: `0` when everything succeeded, `1` when a file failed, `2` for invalid arguments. `shibaslim sign` takes `--author` (required), `--company`, `--sign-key`, `--no-sign`, `-o`, `--suffix` (default `.signed`), `--in-place`, `-r`, `-j` and `--json`. `shibaslim verify` exits with `0` when every signature holds and `1` otherwise; with `--sign-key <file>` it tells whether that key (private or public) made each signature.
+Exit codes: `0` when everything succeeded, `1` when a file failed, `2` for invalid arguments. `shibaslim sign` takes `--author` (required), `--company`, `--sign-key`, `--no-sign`, `--english-names`, `-o`, `--suffix` (default `.signed`), `--in-place`, `-r`, `-j` and `--json`; `shibaslim names` takes the same output options, with `--suffix` defaulting to `.en`. `shibaslim verify` exits with `0` when every signature holds and `1` otherwise; with `--sign-key <file>` it tells whether that key (private or public) made each signature.
 
 </details>
 
@@ -325,7 +349,7 @@ When an image changes format its extension changes too, so every `.rels` referen
 <details>
 <summary><b>What is never changed</b></summary>
 
-- The slide XML itself: text, layout, animations and so on (with attribution on, only the attribution after each shape's name)
+- The slide XML itself: text, layout, animations and so on (with attribution on, only the attribution after each shape's name; with English names on, only the names of shapes, layouts, themes and sections)
 - Vector images (EMF, WMF, SVG), GIFs, video and audio
 - Images that use "Set Transparent Color", which relies on exact pixel values that lossy compression would break
 - Tiled image fills are re-encoded but not downsampled
@@ -344,7 +368,7 @@ When an image changes format its extension changes too, so every `.rels` referen
 ## Use as a library
 
 ```js
-import { attributeFile, checkSignatureOf, optimizeFile, optimizeBuffer, renderSlides } from 'shibaslim';
+import { attributeFile, checkSignatureOf, editFile, optimizeFile, optimizeBuffer, renderSlides } from 'shibaslim';
 
 const report = await optimizeFile('in.pptx', 'out.pptx', {
   clarity: 70,
@@ -360,6 +384,9 @@ const check = await checkSignatureOf(signed.output); // check.status: 'valid' | 
 
 // Attribute only, leaving the images alone
 await attributeFile('in.slim.pptx', 'in.slim.signed.pptx', { author: 'Jane Doe' });
+
+// English layer names (also available while compressing, as englishNames: true)
+const { names } = await editFile('in.pptx', 'in.en.pptx', { englishNames: true }); // names.shapes: how many shapes were renamed
 
 // Save every slide as a picture: out/01.png, 02.png…
 const { files, renderer } = await renderSlides('in.pptx', 'out', { width: 1920, format: 'png' });

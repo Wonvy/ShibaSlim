@@ -7,6 +7,8 @@ export const EXT_RE = new RegExp(`\\.(${EXTENSIONS.join('|')})$`, 'i');
 export const DEFAULT_SUFFIX = '.slim';
 /** Added to files that were only attributed, not compressed. */
 export const SIGNED_SUFFIX = '.signed';
+/** Added to files that were only given English names, neither compressed nor attributed. */
+export const ENGLISH_SUFFIX = '.en';
 
 export interface InputItem {
   file: string;

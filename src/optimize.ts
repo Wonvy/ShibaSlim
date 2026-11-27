@@ -5,6 +5,7 @@ import { IMAGE_EXT, JPEG_EXT, PNG_EXT, optimizeImage, type ImageOutcome, type Im
 import { t } from './messages.js';
 import { DEFAULT_CLARITY, PRESET_CLARITY, settingsForClarity, type Preset, type PresetName } from './clarity.js';
 import { OpcPackage, SlimError, extOf } from './opc.js';
+import { useEnglishNames, type NamesResult } from './names.js';
 import { buildPreview } from './preview.js';
 import { analyzeUsage, isImageRel, type ImageNeed } from './usage.js';
 
@@ -21,6 +22,8 @@ export interface OptimizeOptions extends Partial<Preset> {
   stripThumbnail?: boolean;
   /** Also write who made it into the file properties and every slide's selection pane, and sign it. */
   attribution?: Attribution;
+  /** Also give shapes, layouts, themes and sections the names English PowerPoint would (see names.ts). */
+  englishNames?: boolean;
   /** Called as images finish; `done === total` means only repackaging is left. */
   onProgress?: (progress: { done: number; total: number }) => void;
 }
@@ -53,6 +56,8 @@ export interface OptimizeReport {
   thumbnailRemoved: boolean;
   /** Set when attribution was added. */
   attribution?: AttributionResult;
+  /** Set when English names were asked for: what was renamed. */
+  names?: NamesResult;
 }
 
 const MEDIA_RE = /(^|\/)media\/[^/]+$/i;
@@ -103,8 +108,9 @@ export async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, ind
 }
 
 /**
- * Optimises one presentation held in memory. The result is never larger than the input,
- * unless attribution was asked for: then it is always written, even if only a little larger.
+ * Optimises one presentation held in memory. The result is never larger than the input, unless
+ * attribution was asked for, or English names that changed something: then it is always written,
+ * even if a little larger.
  */
 export async function optimizeBuffer(
   input: Buffer,
@@ -129,6 +135,7 @@ export async function optimizeBuffer(
     return result;
   });
 
+  const names = options.englishNames ? await useEnglishNames(pkg) : undefined;
   // Last, because the signature covers everything else.
   const attributed = attribution ? await applyAttribution(pkg, attribution) : undefined;
 
@@ -144,8 +151,9 @@ export async function optimizeBuffer(
     orphansRemoved,
     thumbnailRemoved,
     ...(attributed ? { attribution: attributed } : {}),
+    ...(names ? { names } : {}),
   };
-  if (!attributed && output.length >= input.length) {
+  if (!attributed && !(names && renamedCount(names) > 0) && output.length >= input.length) {
     return { output: input, report: { ...report, after: input.length, changed: false } };
   }
   return { output, report };
@@ -194,31 +202,67 @@ export async function optimizeFile(
   return report;
 }
 
-export interface AttributeReport {
+/** How many things English names renamed. */
+export function renamedCount(names: NamesResult): number {
+  return names.shapes + names.layouts + names.themes + names.sections;
+}
+
+export interface EditOptions {
+  /** Write who made it into the file properties and every slide's selection pane, and sign it. */
+  attribution?: Attribution;
+  /** Give shapes, layouts, themes and sections the names English PowerPoint would. */
+  englishNames?: boolean;
+}
+
+export interface EditReport {
   before: number;
   after: number;
+  attribution?: AttributionResult;
+  names?: NamesResult;
+}
+
+export interface AttributeReport extends EditReport {
   attribution: AttributionResult;
 }
 
 /**
- * Adds attribution to a presentation held in memory and changes nothing else: images, media and
- * slide content stay as they are, for files that have been compressed already.
+ * Adds attribution and/or English names to a presentation held in memory and changes nothing
+ * else: images, media and slide content stay as they are, for files that have been compressed already.
  */
-export async function attributeBuffer(input: Buffer, attribution: Attribution): Promise<{ output: Buffer; report: AttributeReport }> {
-  const resolved = await resolveAttribution(attribution);
+export async function editBuffer(input: Buffer, options: EditOptions): Promise<{ output: Buffer; report: EditReport }> {
+  const resolved = options.attribution ? await resolveAttribution(options.attribution) : null;
   const pkg = await OpcPackage.load(input);
   const danglingBefore = pkg.danglingCount();
-  const attributed = await applyAttribution(pkg, resolved);
+  const names = options.englishNames ? await useEnglishNames(pkg) : undefined;
+  // Last, because the signature covers everything else.
+  const attributed = resolved ? await applyAttribution(pkg, resolved) : undefined;
   const output = await pkg.save();
-  await verify(output, danglingBefore, [], Boolean(attributed.fingerprint));
-  return { output, report: { before: input.length, after: output.length, attribution: attributed } };
+  await verify(output, danglingBefore, [], Boolean(attributed?.fingerprint));
+  const report: EditReport = {
+    before: input.length,
+    after: output.length,
+    ...(attributed ? { attribution: attributed } : {}),
+    ...(names ? { names } : {}),
+  };
+  return { output, report };
+}
+
+/** Writes `inputPath` with attribution and/or English names to `outputPath` (which may be the same file); see editBuffer. */
+export async function editFile(inputPath: string, outputPath: string, options: EditOptions): Promise<EditReport> {
+  const { output, report } = await editBuffer(await readFile(inputPath), options);
+  await writeAtomic(outputPath, output);
+  return report;
+}
+
+/** Adds attribution and changes nothing else; see editBuffer. */
+export async function attributeBuffer(input: Buffer, attribution: Attribution): Promise<{ output: Buffer; report: AttributeReport }> {
+  const { output, report } = await editBuffer(input, { attribution });
+  return { output, report: report as AttributeReport };
 }
 
 /** Writes `inputPath` with attribution added to `outputPath` (which may be the same file); see attributeBuffer. */
 export async function attributeFile(inputPath: string, outputPath: string, attribution: Attribution): Promise<AttributeReport> {
-  const { output, report } = await attributeBuffer(await readFile(inputPath), attribution);
-  await writeAtomic(outputPath, output);
-  return report;
+  return (await editFile(inputPath, outputPath, { attribution })) as AttributeReport;
 }
 
 async function writeAtomic(file: string, data: Buffer): Promise<void> {
