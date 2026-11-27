@@ -7,6 +7,9 @@ const token = new URLSearchParams(location.search).get('t') || location.hash.sli
 const EXT = /\.(pptx|pptm|ppsx|ppsm|potx|potm)$/i;
 const STORE_KEY = 'shibaslim:settings';
 const UPLOAD_CONCURRENCY = 2;
+const WIDTH_PRESETS = [1280, 1920, 2560, 3840];
+const MIN_WIDTH = 160;
+const MAX_WIDTH = 7680;
 
 const el = {
   banner: document.getElementById('banner'),
@@ -16,15 +19,26 @@ const el = {
   clarityValue: document.getElementById('clarity-value'),
   clarityDetail: document.getElementById('clarity-detail'),
   presets: document.querySelectorAll('[data-clarity]'),
+  taskCompress: document.getElementById('task-compress'),
+  taskSign: document.getElementById('task-sign'),
+  taskImages: document.getElementById('task-images'),
+  compressFields: document.getElementById('compress-fields'),
+  place: document.getElementById('place'),
+  placeBeside: document.getElementById('place-beside'),
+  placeFolder: document.getElementById('place-folder'),
+  pathRow: document.getElementById('path-row'),
   outDir: document.getElementById('out-dir'),
   pickDir: document.getElementById('pick-dir'),
   openDir: document.getElementById('open-dir'),
-  signOn: document.getElementById('sign-on'),
   signFields: document.getElementById('sign-fields'),
   signAuthor: document.getElementById('sign-author'),
   signCompany: document.getElementById('sign-company'),
-  signOnly: document.getElementById('sign-only'),
-  signOnlyHint: document.getElementById('sign-only-hint'),
+  imageFields: document.getElementById('image-fields'),
+  imageWidth: document.getElementById('image-width'),
+  imageWidthCustom: document.getElementById('image-width-custom'),
+  imageFormat: document.getElementById('image-format'),
+  pages: document.querySelectorAll('input[name="pages"]'),
+  pagesList: document.getElementById('pages-list'),
   empty: document.getElementById('empty'),
   listHead: document.getElementById('list-head'),
   list: document.getElementById('list'),
@@ -43,15 +57,23 @@ const el = {
 const state = {
   /** id -> file as reported by the server (or a local placeholder while uploading). */
   files: new Map(),
-  /** Settings each file was last sent with, to tell when a finished file is out of date. */
-  sentWith: new Map(),
   /** Index = clarity; { ppi, jpegQuality, pngQuality } from the server. */
   claritySettings: [],
+  /** What Start does to each file; any combination of the three. */
+  tasks: { compress: true, sign: false, images: false },
   clarity: 60,
+  /** 'beside': a ShibaSlim folder next to each file (desktop app only); 'folder': outDir. */
+  place: 'beside',
   outDir: '',
-  /** Optional attribution: author and company written into results, which are then signed. */
-  sign: { on: false, author: '', company: '', only: false },
+  /** Attribution: author and company written into results, which are then signed. */
+  sign: { author: '', company: '' },
+  /** Slide pictures: width in pixels (custom: typed rather than one of WIDTH_PRESETS), format, and which slides. */
+  images: { width: 1920, custom: false, format: 'png', pages: 'all', list: '' },
   defaultOutDir: '',
+  /** The desktop app adds files by their place on disk, so results can go next to them. */
+  nativeFiles: false,
+  /** This computer can save slides as pictures. */
+  slideImages: false,
   stopped: false,
   /** Running inside the desktop app rather than a browser tab. */
   desktop: false,
@@ -147,7 +169,8 @@ function loadSettings() {
 
 function saveSettings() {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ clarity: state.clarity, outDir: state.outDir, sign: state.sign }));
+    const { clarity, outDir, place, tasks, sign, images } = state;
+    localStorage.setItem(STORE_KEY, JSON.stringify({ clarity, outDir, place, tasks, sign, images }));
   } catch {
     // storage unavailable: settings just won't be remembered
   }
@@ -171,13 +194,19 @@ function clarityLabelKey(c) {
 }
 
 function renderSettings() {
+  const { tasks } = state;
+  el.taskCompress.checked = tasks.compress;
+  el.taskSign.checked = tasks.sign;
+  el.taskImages.checked = tasks.images;
+  el.compressFields.hidden = !tasks.compress;
+  el.signFields.hidden = !tasks.sign;
+  el.imageFields.hidden = !imagesOn();
+
   el.clarity.value = String(state.clarity);
   el.clarity.style.setProperty('--fill', `${((state.clarity - 1) / 99) * 100}%`);
   el.clarityValue.textContent = String(state.clarity);
   const s = state.claritySettings[state.clarity];
-  el.clarityDetail.textContent = signOnly()
-    ? t('gui.settings.signOnly')
-    : s
+  el.clarityDetail.textContent = s
     ? t(s.pngQuality > 0 ? 'gui.settings.palette' : 'gui.settings.lossless', {
         ppi: s.ppi,
         jpeg: s.jpegQuality,
@@ -188,59 +217,121 @@ function renderSettings() {
   for (const button of el.presets) {
     button.setAttribute('aria-pressed', String(Number(button.dataset.clarity) === state.clarity));
   }
+
+  el.place.hidden = !state.nativeFiles;
+  el.placeBeside.checked = besideOn();
+  el.placeFolder.checked = !besideOn();
+  el.pathRow.hidden = besideOn();
   if (document.activeElement !== el.outDir) el.outDir.value = state.outDir;
-  el.signOn.checked = state.sign.on;
-  el.signFields.hidden = !state.sign.on;
+
   if (document.activeElement !== el.signAuthor) el.signAuthor.value = state.sign.author;
   if (document.activeElement !== el.signCompany) el.signCompany.value = state.sign.company;
-  el.signOnly.checked = state.sign.only;
-  el.signOnlyHint.hidden = !state.sign.only;
+
+  const { images } = state;
+  el.imageWidth.value = images.custom ? 'custom' : String(images.width);
+  el.imageWidthCustom.hidden = !images.custom;
+  if (document.activeElement !== el.imageWidthCustom) el.imageWidthCustom.value = String(images.width);
+  el.imageFormat.value = images.format;
+  for (const radio of el.pages) radio.checked = radio.value === images.pages;
+  el.pagesList.disabled = images.pages !== 'some';
+  if (document.activeElement !== el.pagesList) el.pagesList.value = images.list;
 }
 
-/** Only attribute the files, leaving their images as they are. */
-const signOnly = () => state.sign.on && state.sign.only;
+/** Results go to a ShibaSlim folder next to each file, which only the desktop app knows the place of. */
+const besideOn = () => state.nativeFiles && state.place === 'beside';
+const imagesOn = () => state.slideImages && state.tasks.images;
 
 /** One line, trimmed: the server tidies names the same way before writing them. */
 const cleanName = (value) => String(value || '').replace(/\s+/g, ' ').trim();
 
 /** What results get attributed to, or null when attribution is off. */
 function attribution() {
-  if (!state.sign.on) return null;
+  if (!state.tasks.sign) return null;
   return { author: cleanName(state.sign.author), company: cleanName(state.sign.company) };
 }
 
-function setSign(change) {
-  state.sign = { ...state.sign, ...change };
+/** The picture settings as the server takes them: pages is 'all', 'cover' or a list such as "1-3, 5". */
+function pictureSettings() {
+  const { width, format, pages, list } = state.images;
+  return { width, format, pages: pages === 'some' ? list.trim() : pages };
+}
+
+/** What Start would ask for now, in the form results carry back (Settings in src/gui.ts). */
+function currentSettings() {
+  return {
+    compress: state.tasks.compress,
+    clarity: state.tasks.compress ? state.clarity : null,
+    attribution: attribution(),
+    images: imagesOn() ? pictureSettings() : null,
+    outDir: state.outDir,
+    beside: besideOn(),
+  };
+}
+
+/** Says what is missing before anything is sent, and puts the cursor there; true when all is well. */
+function checkSettings(settings, { needTask = true } = {}) {
+  if (needTask && !settings.compress && !settings.attribution && !settings.images) {
+    toast(t('error.noTask'));
+    return false;
+  }
+  if (settings.attribution && !settings.attribution.author) {
+    toast(t('gui.sign.needAuthor'));
+    el.signAuthor.focus();
+    return false;
+  }
+  const images = settings.images;
+  if (images) {
+    if (!Number.isInteger(images.width) || images.width < MIN_WIDTH || images.width > MAX_WIDTH) {
+      toast(t('error.widthRange', { min: MIN_WIDTH, max: MAX_WIDTH }));
+      el.imageWidthCustom.focus();
+      return false;
+    }
+    if (!images.pages) {
+      toast(t('gui.images.needPages'));
+      el.pagesList.focus();
+      return false;
+    }
+  }
+  return true;
+}
+
+function changeSettings(apply) {
+  apply();
   saveSettings();
   renderSettings();
   renderAll();
 }
 
+const setSign = (change) => changeSettings(() => (state.sign = { ...state.sign, ...change }));
+const setTasks = (change) => changeSettings(() => (state.tasks = { ...state.tasks, ...change }));
+const setImages = (change) => changeSettings(() => (state.images = { ...state.images, ...change }));
+
 function setClarity(value) {
-  state.clarity = Math.min(100, Math.max(1, Math.round(Number(value) || 60)));
-  saveSettings();
-  renderSettings();
-  renderAll();
+  changeSettings(() => (state.clarity = Math.min(100, Math.max(1, Math.round(Number(value) || 60)))));
 }
 
 function setOutDir(value) {
-  state.outDir = value.trim() || state.defaultOutDir;
-  saveSettings();
-  renderSettings();
-  renderAll();
+  changeSettings(() => (state.outDir = value.trim() || state.defaultOutDir));
 }
 
 // ---------- file list ----------
 
+/** A finished file whose result was made with other settings than the page has now. */
 function isStale(file) {
-  if (file.state !== 'done') return false;
-  const sent = state.sentWith.get(file.id);
-  const r = file.result;
-  if (r && Boolean(r.signOnly) !== signOnly()) return true;
-  if (r && !r.signOnly && r.clarity !== state.clarity) return true;
-  const wanted = attribution();
-  if (r && (wanted ? cleanName(r.author) !== wanted.author || cleanName(r.company) !== wanted.company : Boolean(r.author))) return true;
-  return Boolean(sent && sent.outDir !== state.outDir);
+  if (file.state !== 'done' || !file.result || !file.result.settings) return false;
+  const done = file.result.settings;
+  const now = currentSettings();
+  if (done.compress !== now.compress || done.clarity !== now.clarity) return true;
+  const a = done.attribution;
+  const b = now.attribution;
+  if (Boolean(a) !== Boolean(b) || (a && (cleanName(a.author) !== b.author || cleanName(a.company) !== b.company))) return true;
+  const p = done.images;
+  const q = now.images;
+  if (Boolean(p) !== Boolean(q) || (p && (p.width !== q.width || p.format !== q.format || p.pages !== q.pages))) return true;
+  // Files the desktop app added by path can go next to themselves; anything else goes to the folder.
+  const beside = (settings) => Boolean(file.local && settings.beside);
+  if (beside(done) !== beside(now)) return true;
+  return !beside(now) && done.outDir !== now.outDir;
 }
 
 function needsWork(file) {
@@ -298,26 +389,40 @@ function metaText(file) {
       return t('gui.meta.uploading', { pct: Math.round(file.progress * 100), size });
     case 'queued':
       return t('gui.meta.queued', { size }) + signatureText(file);
-    case 'running':
-      if (signOnly()) return t('gui.meta.signing', { size });
-      return file.progress >= 0.9
-        ? t('gui.meta.packing', { size })
-        : t('gui.meta.running', { size, pct: Math.round((file.progress / 0.9) * 100) });
+    case 'running': {
+      const a = file.activity;
+      if (!a) return t('gui.meta.working', { size });
+      if (a.kind === 'images') return a.total > 0 ? t('gui.meta.drawingCount', { size, done: a.done, total: a.total }) : t('gui.meta.drawing', { size });
+      if (a.kind === 'sign') return t('gui.meta.signing', { size });
+      if (a.kind === 'pack') return t('gui.meta.packing', { size });
+      return t('gui.meta.running', { size, pct: a.total > 0 ? Math.round((a.done / a.total) * 100) : 0 });
+    }
     case 'error':
       return file.error ? errorText(file.error) : t('gui.meta.failed');
     case 'done': {
       const r = file.result;
       if (isStale(file)) return t('gui.meta.stale', { size });
-      if (!r.changed) return t('gui.meta.unchanged', { size });
-      if (r.signOnly) return t('gui.meta.signedOnly', { size: formatBytes(r.after), author: r.author });
-      const done = t('gui.meta.done', {
-        before: formatBytes(r.before),
-        after: formatBytes(r.after),
-        optimized: r.optimized,
-        images: r.images,
-        clarity: r.clarity,
-      });
-      return r.author ? done + t('gui.meta.signed', { author: r.author }) : done;
+      const settings = r.settings || {};
+      let text = '';
+      if (r.before !== undefined) {
+        if (!settings.compress) text = t('gui.meta.signedOnly', { size: formatBytes(r.after), author: r.author });
+        else if (!r.changed) text = t('gui.meta.unchanged', { size });
+        else {
+          text = t('gui.meta.done', {
+            before: formatBytes(r.before),
+            after: formatBytes(r.after),
+            optimized: r.optimized,
+            images: r.images,
+            clarity: settings.clarity,
+          });
+          if (r.author) text += t('gui.meta.signed', { author: r.author });
+        }
+      }
+      if (r.pictures) {
+        const params = { size, n: r.pictures.count, renderer: { t: `gui.renderer.${r.pictures.renderer}` } };
+        text = text ? text + t('gui.meta.pictures', params) : t('gui.meta.picturesOnly', params);
+      }
+      return text || t('gui.meta.waiting', { size });
     }
     default:
       return t('gui.meta.waiting', { size }) + signatureText(file);
@@ -347,7 +452,8 @@ function renderRow(file) {
   if (file.thumb) showThumb(li, file.id);
   const name = li.querySelector('.name');
   name.textContent = file.rel || file.name;
-  name.title = file.output ? t('gui.savedTo', { path: file.output }) : file.rel || file.name;
+  const saved = file.output || file.slidesDir;
+  name.title = saved ? t('gui.savedTo', { path: saved }) : file.rel || file.name;
   const meta = li.querySelector('.meta');
   meta.textContent = metaText(file);
   meta.title = file.state === 'waiting' || file.state === 'queued' ? signatureTitle(file) : '';
@@ -355,8 +461,10 @@ function renderRow(file) {
   li.querySelector('.bar > span').style.width = `${Math.round(progress * 100)}%`;
   // An attributed result can come out a little larger when its images had nothing left to give.
   const r = file.result;
+  const compressed = r && r.settings && r.settings.compress && r.before !== undefined;
   li.querySelector('.saved').textContent =
-    r && r.changed && !r.signOnly && r.after < r.before && !isStale(file) ? `−${percentSaved(r.before, r.after)}` : '';
+    compressed && r.changed && r.after < r.before && !isStale(file) ? `−${percentSaved(r.before, r.after)}` : '';
+  li.querySelector('[data-act="download"]').hidden = !file.output;
   const busy = file.state === 'uploading' || file.state === 'running';
   li.querySelector('[data-act="preview"]').disabled = file.state === 'uploading';
   const images = li.querySelector('[data-act="images"]');
@@ -372,15 +480,19 @@ function renderSummary() {
   const uploading = files.filter((f) => f.state === 'uploading').length;
   const active = files.some((f) => f.state === 'queued' || f.state === 'running');
   const done = files.filter((f) => f.state === 'done' && f.result && !isStale(f));
+  // Only presentations that were written have sizes to compare; pictures alone do not.
+  const sized = done.filter((f) => f.result.before !== undefined);
 
   let html;
   if (files.length === 0) {
     html = I18N.rich('gui.summary.empty');
+  } else if (done.length > 0 && sized.length === 0) {
+    html = I18N.rich('gui.summary.doneCount', { done: done.length, total: files.length });
   } else if (done.length > 0) {
-    const before = done.reduce((s, f) => s + f.result.before, 0);
-    const after = done.reduce((s, f) => s + f.result.after, 0);
+    const before = sized.reduce((s, f) => s + f.result.before, 0);
+    const after = sized.reduce((s, f) => s + f.result.after, 0);
     // Files that were only attributed save nothing, and may even grow by a few hundred bytes.
-    const saved = after < before && !done.every((f) => f.result.signOnly);
+    const saved = after < before && sized.some((f) => f.result.settings && f.result.settings.compress);
     html = I18N.rich(saved ? 'gui.summary.done' : 'gui.summary.doneSame', {
       done: done.length,
       total: files.length,
@@ -394,13 +506,17 @@ function renderSummary() {
   if (uploading > 0) html += I18N.rich('gui.summary.uploading', { n: uploading });
   el.summary.innerHTML = html;
 
-  el.start.textContent = t(active ? 'gui.stop' : signOnly() ? 'gui.startSign' : 'gui.start');
+  const settings = currentSettings();
+  const anyTask = settings.compress || Boolean(settings.attribution) || Boolean(settings.images);
+  el.start.textContent = t(active ? 'gui.stop' : 'gui.start');
   el.start.classList.toggle('stop', active);
-  el.start.disabled = !active && !files.some(needsWork);
+  el.start.disabled = !active && (!anyTask || !files.some(needsWork));
   el.clear.disabled = files.length === 0 || files.every((f) => f.state === 'running' || f.state === 'uploading');
-  el.clarity.disabled = active || signOnly();
-  for (const button of el.presets) button.disabled = active || signOnly();
-  for (const control of [el.signOn, el.signAuthor, el.signCompany, el.signOnly]) control.disabled = active;
+  // Settings stay as they are while files are being worked on.
+  const controls = [el.clarity, ...el.presets, el.taskCompress, el.taskSign, el.taskImages, el.placeBeside, el.placeFolder];
+  controls.push(el.signAuthor, el.signCompany, el.imageWidth, el.imageWidthCustom, el.imageFormat, ...el.pages);
+  for (const control of controls) control.disabled = active;
+  el.pagesList.disabled = active || state.images.pages !== 'some';
 }
 
 function renderAll() {
@@ -421,7 +537,6 @@ function upsert(file) {
 
 function removeFile(id) {
   state.files.delete(id);
-  state.sentWith.delete(id);
   rowFor(id)?.remove();
   renderAll();
 }
@@ -545,8 +660,42 @@ window.addEventListener('drop', async (event) => {
   addFiles(await filesFromDrop(event.dataTransfer));
 });
 
+/** Says what happened to files the desktop app added by path (they arrive in the list as events). */
+function reportAdded({ added, skipped, duplicate, cancelled }) {
+  if (cancelled) return;
+  if (added === 0 && duplicate === 0) toast(t('gui.toast.noPpt'));
+  else if (skipped > 0) toast(t('gui.toast.skipped', { added, skipped }));
+  else if (duplicate > 0) toast(t('gui.toast.duplicate', { n: duplicate }));
+}
+
+async function addPaths(paths) {
+  try {
+    reportAdded(await api('/api/add', { method: 'POST', body: { paths } }));
+  } catch (err) {
+    toast(errorText(err));
+  }
+}
+
+// The desktop app takes drops itself and hands over where the files are (forward_drop in src-tauri/src/main.rs).
+window.shibaslimDrop = (message) => {
+  if (!message || state.stopped) return;
+  el.overlay.hidden = message.type !== 'enter';
+  if (message.type === 'drop' && Array.isArray(message.paths) && message.paths.length > 0) addPaths(message.paths);
+};
+
 for (const button of document.querySelectorAll('[data-pick]')) {
-  button.addEventListener('click', () => (button.dataset.pick === 'folder' ? el.folderInput : el.fileInput).click());
+  button.addEventListener('click', async () => {
+    const folder = button.dataset.pick === 'folder';
+    if (!state.nativeFiles) {
+      (folder ? el.folderInput : el.fileInput).click();
+      return;
+    }
+    try {
+      reportAdded(await api('/api/pick-inputs', { method: 'POST', body: { folder } }));
+    } catch (err) {
+      toast(errorText(err));
+    }
+  });
 }
 el.fileInput.addEventListener('change', () => {
   addFiles([...el.fileInput.files].map((file) => ({ file, rel: file.name })));
@@ -607,17 +756,19 @@ el.list.addEventListener('click', async (event) => {
   }
 });
 
-/** Saves every slide of a file as a picture in the save folder, then opens that folder. */
+/** Saves the slides of one file as pictures right away, with the picture settings, then opens their folder. */
 async function exportImages(id) {
   const rerender = () => {
     const file = state.files.get(id);
     if (file) renderRow(file);
   };
+  const images = pictureSettings();
+  if (!checkSettings({ images }, { needTask: false })) return;
   state.exporting.add(id);
   rerender();
   toast(t('gui.toast.imagesRunning'));
   try {
-    const result = await api(`/api/images/${id}`, { method: 'POST', body: { outDir: state.outDir } });
+    const result = await api(`/api/images/${id}`, { method: 'POST', body: { outDir: state.outDir, beside: besideOn(), images } });
     const renderer = { t: `gui.renderer.${result.renderer}` };
     toast(
       result.failed.length > 0
@@ -642,17 +793,9 @@ el.start.addEventListener('click', async () => {
     }
     const ids = files.filter(needsWork).map((f) => f.id);
     if (ids.length === 0) return;
-    const signWith = attribution();
-    if (signWith && !signWith.author) {
-      toast(t('gui.sign.needAuthor'));
-      el.signAuthor.focus();
-      return;
-    }
-    await api('/api/compress', {
-      method: 'POST',
-      body: { ids, clarity: state.clarity, outDir: state.outDir, attribution: signWith, signOnly: signOnly() },
-    });
-    for (const id of ids) state.sentWith.set(id, { clarity: state.clarity, outDir: state.outDir });
+    const settings = currentSettings();
+    if (!checkSettings(settings)) return;
+    await api('/api/start', { method: 'POST', body: { ids, ...settings } });
   } catch (err) {
     toast(errorText(err));
   }
@@ -673,13 +816,35 @@ el.outDir.addEventListener('change', () => setOutDir(el.outDir.value));
 el.outDir.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') el.outDir.blur();
 });
-el.signOn.addEventListener('change', () => {
-  setSign({ on: el.signOn.checked });
-  if (el.signOn.checked && !cleanName(state.sign.author)) el.signAuthor.focus();
+el.taskCompress.addEventListener('change', () => setTasks({ compress: el.taskCompress.checked }));
+el.taskSign.addEventListener('change', () => {
+  setTasks({ sign: el.taskSign.checked });
+  if (el.taskSign.checked && !cleanName(state.sign.author)) el.signAuthor.focus();
 });
+el.taskImages.addEventListener('change', () => setTasks({ images: el.taskImages.checked }));
 el.signAuthor.addEventListener('input', () => setSign({ author: el.signAuthor.value }));
 el.signCompany.addEventListener('input', () => setSign({ company: el.signCompany.value }));
-el.signOnly.addEventListener('change', () => setSign({ only: el.signOnly.checked }));
+for (const radio of [el.placeBeside, el.placeFolder]) {
+  radio.addEventListener('change', () => changeSettings(() => (state.place = radio.value)));
+}
+el.imageWidth.addEventListener('change', () => {
+  if (el.imageWidth.value === 'custom') {
+    setImages({ custom: true });
+    el.imageWidthCustom.focus();
+    el.imageWidthCustom.select();
+  } else {
+    setImages({ custom: false, width: Number(el.imageWidth.value) });
+  }
+});
+el.imageWidthCustom.addEventListener('input', () => setImages({ width: Math.round(Number(el.imageWidthCustom.value)) || 0 }));
+el.imageFormat.addEventListener('change', () => setImages({ format: el.imageFormat.value === 'jpg' ? 'jpg' : 'png' }));
+for (const radio of el.pages) {
+  radio.addEventListener('change', () => {
+    setImages({ pages: radio.value });
+    if (radio.value === 'some') el.pagesList.focus();
+  });
+}
+el.pagesList.addEventListener('input', () => setImages({ list: el.pagesList.value }));
 
 el.pickDir.addEventListener('click', async () => {
   el.pickDir.disabled = true;
@@ -777,6 +942,8 @@ async function init() {
   state.defaultOutDir = data.defaultOutDir;
   state.desktop = data.desktop === true;
   state.nativePreview = data.nativePreview === true;
+  state.nativeFiles = data.nativeFiles === true;
+  state.slideImages = data.slideImages === true;
   // In the desktop app the window's close button quits, and results are already saved where they belong.
   document.documentElement.classList.toggle('desktop', state.desktop);
   document.documentElement.classList.toggle('no-slide-images', data.slideImages !== true);
@@ -791,12 +958,25 @@ async function init() {
   const saved = loadSettings();
   state.clarity = Math.min(100, Math.max(1, Math.round(Number(saved.clarity) || data.defaultClarity)));
   state.outDir = typeof saved.outDir === 'string' && saved.outDir ? saved.outDir : data.defaultOutDir;
+  state.place = saved.place === 'folder' ? 'folder' : 'beside';
   const sign = saved.sign && typeof saved.sign === 'object' ? saved.sign : {};
   state.sign = {
-    on: sign.on === true,
     author: typeof sign.author === 'string' ? sign.author : '',
     company: typeof sign.company === 'string' ? sign.company : '',
-    only: sign.only === true,
+  };
+  const tasks = saved.tasks && typeof saved.tasks === 'object' ? saved.tasks : null;
+  state.tasks = tasks
+    ? { compress: tasks.compress === true, sign: tasks.sign === true, images: tasks.images === true }
+    : // Settings saved by 0.3.0 and earlier: an attribution switch with an "attribution only" option.
+      { compress: !(sign.on === true && sign.only === true), sign: sign.on === true, images: false };
+  const images = saved.images && typeof saved.images === 'object' ? saved.images : {};
+  const width = Math.round(Number(images.width));
+  state.images = {
+    width: width >= MIN_WIDTH && width <= MAX_WIDTH ? width : 1920,
+    custom: images.custom === true || (width >= MIN_WIDTH && width <= MAX_WIDTH && !WIDTH_PRESETS.includes(width)),
+    format: images.format === 'jpg' ? 'jpg' : 'png',
+    pages: ['all', 'cover', 'some'].includes(images.pages) ? images.pages : 'all',
+    list: typeof images.list === 'string' ? images.list : '',
   };
   renderSettings();
   for (const file of data.files) state.files.set(file.id, file);

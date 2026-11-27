@@ -29,6 +29,7 @@ export {
 export { buildPreview, type PreviewInput } from './preview.js';
 export {
   availableRenderers,
+  parsePageList,
   renderSlides,
   type ImageFormat,
   type RenderOptions,

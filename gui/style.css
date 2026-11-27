@@ -63,7 +63,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-button, input { font: inherit; color: inherit; }
+button, input, select { font: inherit; color: inherit; }
 
 button {
   border: 1px solid var(--line);
@@ -128,7 +128,7 @@ button.ghost:hover:not(:disabled) { background: var(--soft); color: var(--text);
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo { width: 40px; height: 40px; flex: none; }
 h1 { margin: 0; font-size: 20px; line-height: 1.2; }
-.name { display: flex; align-items: baseline; gap: 8px; }
+.title-line { display: flex; align-items: baseline; gap: 8px; }
 .version { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; line-height: 18px; }
 .tagline { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 
@@ -156,7 +156,21 @@ h1 { margin: 0; font-size: 20px; line-height: 1.2; }
 
 .field { min-width: 0; }
 .field-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
-.field-head label { font-weight: 600; }
+.field-head label, .field-head .label { font-weight: 600; }
+
+/* What Start does: any combination of the three. */
+.tasks {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 22px;
+  padding-bottom: 14px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.tasks-label { color: var(--muted); font-size: 12.5px; }
+.no-slide-images #task-images-label { display: none; }
 output { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .hint { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; }
 
@@ -210,14 +224,18 @@ input[type="range"]:disabled { cursor: default; opacity: 0.5; }
   font-size: 12.5px;
 }
 
-.sign { grid-column: 1 / -1; margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); }
+.section { grid-column: 1 / -1; margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--line); }
 .check { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
 .check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-.check.minor { margin-top: 12px; font-weight: 400; }
-.check.minor + .hint { margin-top: 4px; }
-.sign-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; margin-top: 10px; }
+.radio { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; cursor: pointer; }
+.radio input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.check:has(input:disabled), .radio:has(input:disabled) { opacity: 0.55; cursor: default; }
+.choices { display: flex; flex-direction: column; gap: 6px; }
+.choices.inline { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+#place + .path-row { margin-top: 8px; }
+.sign-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; }
 .sub { display: flex; flex-direction: column; gap: 4px; min-width: 0; color: var(--muted); font-size: 12.5px; }
-.sub input {
+.sub input, .sub select {
   padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -225,8 +243,14 @@ input[type="range"]:disabled { cursor: default; opacity: 0.5; }
   color: var(--text);
   font-size: 13px;
 }
-.sign input:disabled { opacity: 0.5; cursor: default; }
-@media (max-width: 720px) { .sign { margin-top: 0; } .sign-row { grid-template-columns: 1fr; } }
+.sub select { padding-right: 6px; }
+.sub input:disabled, .sub select:disabled { opacity: 0.5; cursor: default; }
+.sub input:focus-visible, .sub select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.image-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 28px; }
+#image-width-custom { width: 88px; }
+#pages-list { width: 120px; }
+@media (max-width: 720px) { .section { margin-top: 0; } .sign-row { grid-template-columns: 1fr; } }
 
 .files { flex: 1; display: flex; flex-direction: column; min-height: 280px; overflow: hidden; }
 

@@ -7,7 +7,7 @@
 // - stdin: one JSON line per reply to a request, and the end of stdin means the app is gone.
 //
 // Things the app does better natively (showing a file in its folder, opening a folder, asking
-// for a folder, opening the comparison window) are requests: { type: 'request', id, call }.
+// for a folder or files, opening the comparison window) are requests: { type: 'request', id, call }.
 
 import { createInterface } from 'node:readline';
 import { startGui } from './dist/gui.js';
@@ -48,6 +48,7 @@ try {
       reveal: (file) => request({ method: 'reveal', path: file }),
       openFolder: (dir) => request({ method: 'open-folder', path: dir }),
       pickFolder: (prompt) => request({ method: 'pick-folder', title: prompt }),
+      pickFiles: (prompt) => request({ method: 'pick-files', title: prompt }),
       openPreview: (url, title) => request({ method: 'open-preview', url, title }),
     },
     // The page's own quit button (hidden in the desktop app, but the endpoint still works).

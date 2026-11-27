@@ -11,11 +11,11 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { checkSignature, defaultKeyPath, keyFileFingerprint, loadOrCreateKey, resolveAttribution, type SignatureStatus } from './attribution.js';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
-import { DEFAULT_SUFFIX, EXT_RE, SIGNED_SUFFIX } from './inputs.js';
+import { collectInputs, DEFAULT_SUFFIX, EXT_RE, SIGNED_SUFFIX, type InputItem } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
 import { OpcPackage, SlimError } from './opc.js';
 import { attributeFile, optimizeFile, thumbnailOf, type AttributeReport, type OptimizeReport } from './optimize.js';
-import { SLIDES_SUFFIX, renderSlides } from './render.js';
+import { checkRenderOptions, chooseRenderers, parsePageList, renderSlides, SLIDES_SUFFIX, type ImageFormat, type RendererName } from './render.js';
 
 /** This engine's version, shown next to the app name (the desktop app's own version wins when given). */
 const ENGINE_VERSION = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
@@ -52,6 +52,8 @@ export interface DesktopShell {
   openFolder(dir: string): Promise<void>;
   /** Asks for a folder; null when the user cancels. */
   pickFolder(prompt: string): Promise<string | null>;
+  /** Asks for presentations to add; null when the user cancels. */
+  pickFiles(prompt: string): Promise<string[] | null>;
   /** Opens a comparison page that is ready to serve in a window of its own. */
   openPreview(url: string, title: string): Promise<void>;
 }
@@ -72,25 +74,19 @@ interface Entry {
   /** Relative path inside the dropped folder (posix separators), mirrored under the output folder. */
   rel: string;
   size: number;
+  /** The file that is read: the original when it was added by path, otherwise the uploaded copy. */
   source: string;
+  /** Where the file is on this computer, when it was added by path (desktop app); its results can go next to it. */
+  origin?: string;
   state: State;
   progress: number;
-  result?: {
-    before: number;
-    after: number;
-    changed: boolean;
-    optimized: number;
-    images: number;
-    clarity: number;
-    outDir: string;
-    /** Set when the result was attributed. */
-    author?: string;
-    company?: string;
-    signed?: boolean;
-    /** Only attributed: the images were left as they were. */
-    signOnly?: boolean;
-  };
+  /** What a running file is doing, for its status line. */
+  activity?: { kind: 'compress' | 'pack' | 'sign' | 'images'; done: number; total: number };
+  result?: Result;
+  /** The presentation written, when one was. */
   output?: string;
+  /** The folder its slide pictures were saved in, when they were. */
+  slidesDir?: string;
   error?: ErrorInfo;
   /** The ShibaSlim signature the dropped file already carries, if any. */
   signature?: SignatureView;
@@ -115,13 +111,40 @@ interface ErrorInfo {
   message: string;
 }
 
+/** What the page asked to be done to its files, as it sent it; results carry it back to tell when they are out of date. */
+interface Settings {
+  compress: boolean;
+  /** Set when compressing. */
+  clarity: number | null;
+  /** Set when attributing; an attribution without compressing leaves the images as they are. */
+  attribution: { author: string; company: string } | null;
+  /** Set when saving slides as pictures; `pages` is 'all', 'cover' or a list such as "1-3, 5". */
+  images: { width: number; format: ImageFormat; pages: string } | null;
+  outDir: string;
+  /** Put results in a ShibaSlim folder next to each file added by path, rather than in `outDir`. */
+  beside: boolean;
+}
+
+interface Result {
+  settings: Settings;
+  /** The presentation written, when the file was compressed or attributed. */
+  before?: number;
+  after?: number;
+  changed?: boolean;
+  optimized?: number;
+  images?: number;
+  author?: string;
+  company?: string;
+  signed?: boolean;
+  /** The slide pictures, when they were saved. */
+  pictures?: { dir: string; count: number; renderer: RendererName; failed: RendererName[] };
+}
+
 interface Job {
   id: string;
-  clarity: number;
-  outDir: string;
-  attribution: { author: string; company: string } | null;
-  /** Attribute only, without compressing; always comes with an attribution. */
-  signOnly: boolean;
+  settings: Settings;
+  /** The slides to save as pictures; null for all of them. */
+  pages: number[] | null;
 }
 
 class HttpError extends Error {
@@ -153,6 +176,8 @@ const PAGE_CSP =
 const MAX_JSON = 64 * 1024;
 /** Where slides can be drawn at all (with PowerPoint or WPS on Windows, PowerPoint or Quick Look on macOS). */
 const SLIDE_IMAGES = process.platform === 'darwin' || process.platform === 'win32';
+/** The folder made next to a file for its results: 汇报.pptx -> ShibaSlim/汇报.slim.pptx. */
+export const RESULTS_FOLDER = 'ShibaSlim';
 
 export function defaultOutDir(): string {
   const downloads = path.join(os.homedir(), 'Downloads');
@@ -194,7 +219,11 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     state: e.state,
     progress: e.progress,
     result: e.result,
+    activity: e.activity,
     output: e.output,
+    slidesDir: e.slidesDir,
+    // Only whether the file has a place on disk; the page never needs the path itself.
+    local: Boolean(e.origin),
     error: e.error,
     signature: e.signature,
     thumb: e.thumb,
@@ -217,35 +246,17 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         entry.progress = 0;
         delete entry.error;
         update(entry);
-        let lastSent = 0;
+        const result: Result = { settings: job.settings };
         try {
-          await mkdir(job.outDir, { recursive: true });
-          const output = await claimOutput(entry, job.outDir, job.signOnly ? SIGNED_SUFFIX : DEFAULT_SUFFIX);
-          const attribution = job.attribution && { ...job.attribution, signingKey: await loadOrCreateKey(keyFile) };
-          if (job.signOnly && attribution) {
-            entry.result = summarizeSigned(await attributeFile(entry.source, output, attribution), job);
-          } else {
-            const report = await optimizeFile(entry.source, output, {
-              clarity: job.clarity,
-              ...(attribution ? { attribution } : {}),
-              onProgress: ({ done, total }) => {
-                entry.progress = total === 0 ? 0.9 : (done / total) * 0.9;
-                const now = Date.now();
-                if (now - lastSent > 150 || done === total) {
-                  lastSent = now;
-                  update(entry);
-                }
-              },
-            });
-            entry.result = summarize(report, job);
-          }
+          await runJob(entry, job, result);
           entry.state = 'done';
           entry.progress = 1;
-          entry.output = output;
         } catch (err) {
           entry.state = 'error';
           entry.error = errorInfo(err);
         }
+        delete entry.activity;
+        entry.result = result;
         update(entry);
       }
     } finally {
@@ -254,13 +265,80 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   }
 
   /**
+   * Does what a job asks, in order: writes the compressed and/or attributed presentation, then saves
+   * the slides as pictures (drawn from the original, which has the sharpest images). `result` collects
+   * what is done, so a failure in the pictures keeps the presentation that was written.
+   */
+  async function runJob(entry: Entry, job: Job, result: Result): Promise<void> {
+    const { settings } = job;
+    const place = placeFor(entry, settings);
+    const writes = settings.compress || settings.attribution !== null;
+    // The share of the progress bar the presentation takes; the pictures get the rest.
+    const share = writes ? (settings.images ? 0.5 : 1) : 0;
+    let lastSent = 0;
+    const report = (activity: NonNullable<Entry['activity']>, progress: number) => {
+      entry.activity = activity;
+      entry.progress = progress;
+      const now = Date.now();
+      if (now - lastSent > 150 || activity.done === activity.total) {
+        lastSent = now;
+        update(entry);
+      }
+    };
+
+    if (writes) {
+      const output = await claimOutput(entry, place, settings.compress ? DEFAULT_SUFFIX : SIGNED_SUFFIX);
+      const attribution = settings.attribution && { ...settings.attribution, signingKey: await loadOrCreateKey(keyFile) };
+      if (!settings.compress && attribution) {
+        report({ kind: 'sign', done: 0, total: 1 }, 0);
+        Object.assign(result, signedSummary(await attributeFile(entry.source, output, attribution)));
+      } else {
+        const optimized = await optimizeFile(entry.source, output, {
+          clarity: settings.clarity ?? DEFAULT_CLARITY,
+          ...(attribution ? { attribution } : {}),
+          onProgress: ({ done, total }) =>
+            report({ kind: done === total ? 'pack' : 'compress', done, total }, share * (total === 0 ? 0.9 : (done / total) * 0.9)),
+        });
+        Object.assign(result, compressedSummary(optimized));
+      }
+      entry.output = output;
+    } else {
+      delete entry.output;
+    }
+
+    if (settings.images) {
+      const dir = claimSlidesDir(entry, place);
+      report({ kind: 'images', done: 0, total: 0 }, share);
+      const drawn = await renderSlides(entry.source, dir, {
+        width: settings.images.width,
+        format: settings.images.format,
+        ...(job.pages ? { pages: job.pages } : {}),
+        onProgress: ({ done, total }) => report({ kind: 'images', done, total }, share + (1 - share) * (total === 0 ? 0 : done / total)),
+      });
+      result.pictures = { dir, count: drawn.files.length, renderer: drawn.renderer, failed: drawn.failed.map((f) => f.renderer) };
+      entry.slidesDir = dir;
+    } else {
+      delete entry.slidesDir;
+    }
+  }
+
+  /**
+   * Where an entry's results go, as the path the file itself would have there: in a ShibaSlim folder
+   * next to the original when asked and its place is known, otherwise mirrored under the save folder.
+   */
+  function placeFor(entry: Entry, settings: Pick<Settings, 'outDir' | 'beside'>): string {
+    if (settings.beside && entry.origin) return path.join(path.dirname(entry.origin), RESULTS_FOLDER, path.basename(entry.origin));
+    const desired = path.join(settings.outDir, ...entry.rel.split('/'));
+    if (!isInsideOrEqual(settings.outDir, desired)) throw new HttpError(400, 'error.badPath');
+    return desired;
+  }
+
+  /**
    * Picks the output file for an entry: its name with .slim added (汇报.pptx -> 汇报.slim.pptx), or
    * .signed when it is only attributed, so a result can never be mistaken for its original, and
    * never a file this session did not write.
    */
-  async function claimOutput(entry: Entry, outDir: string, suffix: string): Promise<string> {
-    const desired = path.join(outDir, ...entry.rel.split('/'));
-    if (!isInsideOrEqual(outDir, desired)) throw new HttpError(400, 'error.badPath');
+  async function claimOutput(entry: Entry, desired: string, suffix: string): Promise<string> {
     const { dir, name, ext } = path.parse(desired);
     const base = name.endsWith(suffix) ? name : name + suffix;
     for (let i = 1; ; i++) {
@@ -281,9 +359,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
    * Picks the folder for a file's slide pictures, 汇报-slides next to where its result goes, or a
    * numbered one when a folder of that name exists that this session did not make.
    */
-  function claimSlidesDir(entry: Entry, outDir: string): string {
-    const desired = path.join(outDir, ...entry.rel.split('/'));
-    if (!isInsideOrEqual(outDir, desired)) throw new HttpError(400, 'error.badPath');
+  function claimSlidesDir(entry: Entry, desired: string): string {
     const { dir, name } = path.parse(desired);
     for (let i = 1; ; i++) {
       const candidate = path.join(dir, i === 1 ? `${name}${SLIDES_SUFFIX}` : `${name}${SLIDES_SUFFIX} (${i})`);
@@ -347,8 +423,55 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     entries.delete(id);
     thumbs.delete(id);
     for (const key of previews.keys()) if (key.startsWith(`${id}:`)) previews.delete(key);
-    await rm(entry.source, { force: true });
+    // Only uploaded copies are ShibaSlim's to delete; a file added by path is the user's original.
+    if (!entry.origin) await rm(entry.source, { force: true });
     broadcast({ type: 'removed', id });
+  }
+
+  /**
+   * Adds presentations by their place on this computer (the desktop app's drops and file dialogs):
+   * files as they are, folders with their sub-folders, leaving out Office lock files, hidden files and
+   * ShibaSlim's own results. Files already in the list are not added again.
+   */
+  async function addPaths(paths: string[]): Promise<{ added: number; skipped: number; duplicate: number }> {
+    let added = 0;
+    let skipped = 0;
+    let duplicate = 0;
+    const known = new Set([...entries.values()].map((e) => e.origin));
+    for (const given of paths) {
+      const info = path.isAbsolute(given) ? await stat(given).catch(() => null) : null;
+      let found: InputItem[] = [];
+      if (info?.isDirectory()) {
+        const top = path.basename(given);
+        const { items } = await collectInputs([given], true, DEFAULT_SUFFIX, undefined);
+        found = items
+          .filter((item) => !item.rel.split('/').slice(0, -1).includes(RESULTS_FOLDER) && !path.parse(item.file).name.endsWith(SIGNED_SUFFIX))
+          .map((item) => ({ file: item.file, rel: top ? `${top}/${item.rel}` : item.rel }));
+      } else if (info?.isFile()) {
+        const name = path.basename(given);
+        if (EXT_RE.test(name) && !name.startsWith('~$') && !name.startsWith('.')) found = [{ file: path.resolve(given), rel: name }];
+      }
+      if (found.length === 0) skipped++;
+      for (const item of found) {
+        if (known.has(item.file)) {
+          duplicate++;
+          continue;
+        }
+        known.add(item.file);
+        const size = (await stat(item.file).catch(() => null))?.size;
+        if (size === undefined) {
+          skipped++;
+          continue;
+        }
+        const name = path.basename(item.file);
+        const entry: Entry = { id: randomUUID(), name, rel: item.rel, size, source: item.file, origin: item.file, state: 'waiting', progress: 0 };
+        entries.set(entry.id, entry);
+        update(entry);
+        inspecting = inspecting.then(() => inspect(entry));
+        added++;
+      }
+    }
+    return { added, skipped, duplicate };
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -398,7 +521,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (resource === 'state' && method === 'GET') {
-      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, version: options.appVersion ?? ENGINE_VERSION, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate), nativePreview: Boolean(options.shell), slideImages: SLIDE_IMAGES });
+      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, version: options.appVersion ?? ENGINE_VERSION, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate), nativePreview: Boolean(options.shell), nativeFiles: Boolean(options.shell), slideImages: SLIDE_IMAGES });
     }
 
     if (resource === 'events' && method === 'GET') {
@@ -433,20 +556,34 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       return json(res, view(entry));
     }
 
+    // The desktop app's drops arrive as paths, so results can be saved next to the originals.
+    if (resource === 'add' && method === 'POST') {
+      const { paths } = await readJson(req);
+      if (!Array.isArray(paths) || paths.some((p) => typeof p !== 'string')) throw new HttpError(400, 'error.badRequest');
+      return json(res, await addPaths(paths as string[]));
+    }
+
+    // The desktop app's own file and folder dialogs, which give paths rather than copies.
+    if (resource === 'pick-inputs' && method === 'POST' && options.shell) {
+      const { folder } = await readJson(req);
+      const lang: Locale = req.headers['x-shiba-lang'] === 'en' ? 'en' : 'zh';
+      const picked =
+        folder === true
+          ? await options.shell.pickFolder(t(lang, 'gui.pickFolderPrompt'))
+          : await options.shell.pickFiles(t(lang, 'gui.pickFilesPrompt'));
+      if (picked === null || picked.length === 0) return json(res, { added: 0, skipped: 0, duplicate: 0, cancelled: true });
+      return json(res, await addPaths(Array.isArray(picked) ? picked : [picked]));
+    }
+
     if (resource === 'files' && method === 'DELETE') {
       if (id) await removeEntry(id);
       else for (const entryId of [...entries.keys()]) if (entries.get(entryId)?.state !== 'running') await removeEntry(entryId);
       return json(res, { ok: true });
     }
 
-    if (resource === 'compress' && method === 'POST') {
+    if (resource === 'start' && method === 'POST') {
       const body = await readJson(req);
-      const clarity = Number(body.clarity);
-      if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
-      const outDir = validateDir(body.outDir);
-      const attribution = await parseAttribution(body.attribution);
-      const signOnly = body.signOnly === true;
-      if (signOnly && !attribution) throw new HttpError(400, 'error.authorMissing');
+      const { settings, pages } = await parseSettings(body);
       const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string') : [];
       let queued = 0;
       for (const entryId of ids) {
@@ -455,7 +592,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         entry.state = 'queued';
         entry.progress = 0;
         delete entry.error;
-        queue.push({ id: entryId, clarity, outDir, attribution, signOnly });
+        queue.push({ id: entryId, settings, pages });
         update(entry);
         queued++;
       }
@@ -498,11 +635,20 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       return;
     }
 
-    // Saves every slide of the dropped file (not the compressed one) as a picture; the page then opens the folder.
+    // Saves the slides of one file (the original, not a compressed copy) as pictures right away, with
+    // the page's picture settings; the page then opens the folder.
     if (resource === 'images' && method === 'POST') {
       const entry = entryOr404();
-      const dir = claimSlidesDir(entry, validateDir((await readJson(req)).outDir));
-      const report = await renderSlides(entry.source, dir);
+      const body = await readJson(req);
+      const images = parseImages(body.images);
+      if (!images) throw new HttpError(400, 'error.badRequest');
+      await badRequest(() => chooseRenderers());
+      const dir = claimSlidesDir(entry, placeFor(entry, { outDir: validateDir(body.outDir), beside: body.beside === true }));
+      const report = await renderSlides(entry.source, dir, {
+        width: images.width,
+        format: images.format,
+        ...(images.list ? { pages: images.list } : {}),
+      });
       return json(res, { dir, count: report.files.length, renderer: report.renderer, failed: report.failed.map((f) => f.renderer) });
     }
 
@@ -523,8 +669,9 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
 
     if (resource === 'reveal' && method === 'POST') {
       const entry = entryOr404();
-      if (!entry.output || !existsSync(entry.output)) throw new HttpError(404, 'error.noResult');
-      await (options.shell ? options.shell.reveal(entry.output) : reveal(entry.output));
+      const target = entry.output ?? entry.slidesDir;
+      if (!target || !existsSync(target)) throw new HttpError(404, 'error.noResult');
+      await (options.shell ? options.shell.reveal(target) : reveal(target));
       return json(res, { ok: true });
     }
 
@@ -627,7 +774,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   };
 }
 
-function summarize(report: OptimizeReport, job: Job): NonNullable<Entry['result']> {
+function compressedSummary(report: OptimizeReport): Partial<Result> {
   const attributed = report.attribution;
   return {
     before: report.before,
@@ -635,14 +782,12 @@ function summarize(report: OptimizeReport, job: Job): NonNullable<Entry['result'
     changed: report.changed,
     optimized: report.images.filter((i) => i.status === 'optimized').length,
     images: report.images.length,
-    clarity: job.clarity,
-    outDir: job.outDir,
     ...(attributed ? { author: attributed.author, signed: Boolean(attributed.fingerprint) } : {}),
     ...(attributed?.company ? { company: attributed.company } : {}),
   };
 }
 
-function summarizeSigned(report: AttributeReport, job: Job): NonNullable<Entry['result']> {
+function signedSummary(report: AttributeReport): Partial<Result> {
   const { attribution } = report;
   return {
     before: report.before,
@@ -650,17 +795,65 @@ function summarizeSigned(report: AttributeReport, job: Job): NonNullable<Entry['
     changed: true,
     optimized: 0,
     images: 0,
-    clarity: job.clarity,
-    outDir: job.outDir,
     author: attribution.author,
     ...(attribution.company ? { company: attribution.company } : {}),
     signed: Boolean(attribution.fingerprint),
-    signOnly: true,
   };
 }
 
+/** Runs a check whose SlimError means the request cannot be done, answering 400 with its message. */
+async function badRequest<T>(check: () => T | Promise<T>): Promise<T> {
+  try {
+    return await check();
+  } catch (err) {
+    if (err instanceof SlimError) throw new HttpError(400, err.code, err.params);
+    throw err;
+  }
+}
+
+/** The page's picture settings `{ width, format, pages }`, checked; null when it sends none. */
+function parseImages(value: unknown): (NonNullable<Settings['images']> & { list: number[] | null }) | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) throw new HttpError(400, 'error.badRequest');
+  const { width, format, pages } = value as Record<string, unknown>;
+  try {
+    const checked = checkRenderOptions({ width: Number(width), format: format as ImageFormat });
+    const spec = typeof pages === 'string' && pages.trim() ? pages.trim() : 'all';
+    const list = spec === 'all' ? null : spec === 'cover' ? [1] : parsePageList(spec);
+    return { width: checked.width, format: checked.format, pages: spec, list };
+  } catch (err) {
+    if (err instanceof SlimError) throw new HttpError(400, err.code, err.params);
+    throw err;
+  }
+}
+
+/** What the page asks to be done (`/api/start`), checked before any file is touched. */
+async function parseSettings(body: Record<string, unknown>): Promise<{ settings: Settings; pages: number[] | null }> {
+  const compress = body.compress === true;
+  let clarity: number | null = null;
+  if (compress) {
+    clarity = Number(body.clarity);
+    if (!Number.isInteger(clarity) || clarity < 1 || clarity > 100) throw new HttpError(400, 'error.clarityRange');
+  }
+  const attribution = await parseAttribution(body.attribution);
+  const images = parseImages(body.images);
+  if (!compress && !attribution && !images) throw new HttpError(400, 'error.noTask');
+  // Say at once when nothing here can draw slides, rather than on every file.
+  if (images) await badRequest(() => chooseRenderers());
+  const outDir = validateDir(body.outDir);
+  const settings: Settings = {
+    compress,
+    clarity,
+    attribution,
+    images: images && { width: images.width, format: images.format, pages: images.pages },
+    outDir,
+    beside: body.beside === true,
+  };
+  return { settings, pages: images?.list ?? null };
+}
+
 /** The page sends `attribution: { author, company }` to have results attributed, or null. */
-async function parseAttribution(value: unknown): Promise<Job['attribution']> {
+async function parseAttribution(value: unknown): Promise<Settings['attribution']> {
   if (value === null || value === undefined) return null;
   const { author, company } = (typeof value === 'object' && !Array.isArray(value) ? value : {}) as Record<string, unknown>;
   if (typeof author !== 'string' || (company !== undefined && typeof company !== 'string')) throw new HttpError(400, 'error.badRequest');

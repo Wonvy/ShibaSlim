@@ -79,7 +79,7 @@ describe('page runtime', () => {
     const zh = boot({ languages: ['zh-TW'] });
     assert.equal(zh.I.lang(), 'zh');
     assert.equal(zh.root.lang, 'zh-CN');
-    assert.equal(zh.I.t('gui.start'), '开始压缩');
+    assert.equal(zh.I.t('gui.clear'), '清空');
 
     let changes = 0;
     en.I.onLangChange(() => changes++);

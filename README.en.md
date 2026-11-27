@@ -36,7 +36,7 @@
 - **Sized to how images are shown**: works out how large each image actually appears on its slides and keeps only the pixels needed, accounting for crops and group scaling.
 - **One clarity setting**: a single number from 1 to 100 sets resolution, JPEG quality and PNG colour reduction together.
 - **Before/after comparison**: picks a few random slides and lets you drag a divider between the original and the compressed version, with up to 4× zoom.
-- **Slides as pictures**: saves every slide as a PNG or JPG, drawn by PowerPoint or WPS on Windows, and by PowerPoint or, without it, the built-in Quick Look on a Mac.
+- **Slides as pictures**: saves every slide (or just the cover, or the slides you name) as a PNG or JPG at the width you choose, drawn by PowerPoint or WPS on Windows, and by PowerPoint or, without it, the built-in Quick Look on a Mac.
 - **Desktop app, web page and CLI**: install the app and double-click, with no Node.js needed, and share it as a single file; or use it in a browser, or batch-process folders from the command line.
 - **Online updates**: the desktop app looks for a new version when it starts; one click downloads it, installs it and reopens the app.
 - **Light or dark, Chinese or English**: the pages follow your system's theme and language by default, and you can switch either at the top right; your choice is remembered.
@@ -88,21 +88,35 @@ Then open the interface either way:
 The ShibaSlim page opens in your browser:
 
 1. Drag PowerPoint files or whole folders onto the page, or use **Choose files** / **Choose folder**. Folders are added with all their sub-folders.
-2. Move the **Clarity** slider, or pick **Small**, **Everyday** or **High**.
-3. To check the result first, click **Compare** next to a file. The comparison opens in a new tab; this is only a trial run and saves nothing.
+2. Under **What to do**, tick any combination of **Compress images**, **Add attribution** and **Save slides as pictures**: pictures alone, say, or compressing and attributing together.
+3. When compressing, move the **Clarity** slider, or pick **Small**, **Everyday** or **High**. To check the result first, click **Compare** next to a file; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
 
-For a picture of every slide, click **Pictures** next to a file; see [Slides as pictures](#slides-as-pictures).
+Attribution needs an author (the company is optional); see [Attribution](#attribution-optional). For pictures you can set the width (1280, 1920, 2560, 3840 or any number of pixels), the format (PNG or JPG) and which slides (all, the cover only, or numbers such as `1-3, 5`); see [Slides as pictures](#slides-as-pictures). To save one file's pictures right away, click **Pictures** next to it.
 
-To leave your name in the results, tick **Add attribution** and enter an author and company before you start; see [Attribution](#attribution-optional).
+After a setting changes, finished files show "Settings changed, ready to run again", and **Start** redoes them with the new settings.
 
-The desktop app shows the same interface with a few differences: **Compare** is built in the background first and then opens in a new window; results are already saved in the **Save to** folder, where **Show** finds them, so there is no **Download** button; and closing the window quits, so instead of **Quit** there is **Check for updates**. Its window, menus and dialogs also follow the system's language and light or dark appearance.
+The desktop app shows the same interface with a few differences: results go next to the originals by default (see below); **Compare** is built in the background first and then opens in a new window; results are already saved where they belong, where **Show** finds them, so there is no **Download** button; and closing the window quits, so instead of **Quit** there is **Check for updates**. Its window, menus and dialogs also follow the system's language and light or dark appearance.
 
 The desktop app looks for a new version each time it starts. If there is one, it asks; click **Update Now** and it downloads, installs and reopens itself. To check right away, click **Check for updates** at the top right, or on macOS choose **ShibaSlim → Check for Updates…**.
 
 The switches at the top right set the theme (System / Light / Dark) and language (System / 中文 / English). Both follow the system by default and change along with it; a choice you make is remembered, and the comparison page uses it too.
 
-Results go to `Downloads/ShibaSlim` by default; you can change this on the page. Results get `.slim` added to their names (`report.pptx` → `report.slim.pptx`), so even saved next to the originals they cannot be mixed up with them; dropped folders keep their structure. If a file of that name is already there, the result is saved as `report.slim (2).pptx`; existing files are never overwritten.
+The desktop app saves results in a **`ShibaSlim` folder next to each original** by default, and leaves the original alone:
+
+```
+project/
+├── report.pptx              ← the original
+└── ShibaSlim/
+    ├── report.slim.pptx     ← compressed (and attributed)
+    └── report-slides/       ← slide pictures
+        ├── 01.png
+        └── 02.png
+```
+
+Under **Save to** you can switch to **This folder** to put every result in one folder instead; dropped folders then keep their structure. The browser version (`shibaslim gui`) cannot learn where a file came from, so it always saves to a folder, `Downloads/ShibaSlim` by default.
+
+Compressed results get `.slim` added to their names (`report.pptx` → `report.slim.pptx`) and attributed-only ones `.signed`, so they cannot be mixed up with the originals. If a file of that name is already there, the result is saved as `report.slim (2).pptx`; existing files are never overwritten.
 
 > [!NOTE]
 > The page is served only on `127.0.0.1` and its address carries a one-time access token, so other computers and other websites cannot reach it. Dropped files are copied to the system temp folder and deleted when you quit. Click **Quit** at the top right when you are done, or simply close the terminal window.
@@ -131,7 +145,9 @@ The comparison page picks a few random slides whose images changed and draws the
 
 ## Slides as pictures
 
-Click **Pictures** next to a file in the graphical interface, or run `shibaslim images`, to save every slide as a picture in a `<name>-slides` folder (`report.pptx` → `report-slides/01.png, 02.png…`). The graphical interface puts that folder in the **Save to** folder and opens it when done; the command line puts it next to the original by default. The pictures are of the original file, not the compressed one, and hidden slides are included.
+Tick **Save slides as pictures** in the graphical interface and click **Start** (or click **Pictures** next to a file for just that one), or run `shibaslim images`, to save the slides as pictures in a `<name>-slides` folder, named by slide number (`report.pptx` → `report-slides/01.png, 02.png…`). The graphical interface puts that folder with the other results (in the desktop app, the `ShibaSlim` folder next to the original by default); the command line puts it next to the original by default. The pictures are of the original file, not the compressed one, and hidden slides are included and keep their numbers.
+
+To save only some slides, pick **Cover only** or **These** (such as `1-3, 5`) in the graphical interface, or pass `-p 1` or `-p 1-3,5` on the command line. Pictures keep their slide numbers: slides 2 and 5 give `02.png` and `05.png`. Numbers past the last slide are ignored.
 
 A pptx holds no pictures of its slides, so a program has to draw them. ShibaSlim uses the best one this computer has, and moves on to the next if it fails:
 
@@ -147,6 +163,7 @@ PowerPoint and WPS open a temporary copy in the background, so the original is n
 ```bash
 shibaslim images report.pptx                       # report-slides/01.png, 02.png…
 shibaslim images ./decks -r -w 1280 --format jpg   # a whole folder, as 1280-pixel-wide JPGs
+shibaslim images report.pptx -p 1                  # the cover only
 shibaslim images report.pptx --renderer quicklook  # use Quick Look
 ```
 
@@ -155,6 +172,7 @@ shibaslim images report.pptx --renderer quicklook  # use Quick Look
 | `-w, --width <pixels>` | Picture width, default 1920 (1920×1080 for a 16:9 slide); the height follows the slide's proportions |
 | `--format <png\|jpg>` | Picture format, default png |
 | `-q, --quality <1-100>` | JPG quality, default 90 |
+| `-p, --pages <numbers>` | Save only these slides, such as `1` or `1-3,5`; all by default |
 | `--renderer <name>` | Use only this one: `powerpoint`, `wps` or `quicklook` |
 | `-o, --out-dir <dir>` | Output folder (keeps the sub-folder structure); by default next to the original |
 | `-r, --recursive` / `--json` | Include sub-folders / print results as JSON |
@@ -189,7 +207,7 @@ No shapes are added, only names change, so slide shows and printouts look exactl
 
 Macros in a `.pptm` that look shapes up by name (`Shapes("Picture 3")`) no longer find them once they are renamed, so check such files before attributing them.
 
-A file you have compressed already does not need compressing again: tick **Attribution only, leave the images as they are** in the interface, or use `shibaslim sign`. Images and other media stay exactly as they are; only the three things above are written, and results get `.signed` in their name (`report.slim.signed.pptx`).
+A file you have compressed already does not need compressing again: tick **Add attribution** without **Compress images** in the interface, or use `shibaslim sign`. Images and other media stay exactly as they are; only the three things above are written, and results get `.signed` in their name (`report.slim.signed.pptx`).
 
 The signature covers every part of the package. Any change after signing, including opening the file in PowerPoint and saving it again, makes it stop matching. To check a file:
 

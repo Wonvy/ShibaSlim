@@ -11,7 +11,7 @@ import JSZip from 'jszip';
 import pptxgenModule from 'pptxgenjs';
 import sharp from 'sharp';
 import { OpcPackage } from '../dist/opc.js';
-import { availableRenderers, fitPicture, pdfToPngs, prepareDeck, renderSlides, singleSlideCopy } from '../dist/render.js';
+import { availableRenderers, fitPicture, parsePageList, pdfToPngs, prepareDeck, renderSlides, singleSlideCopy } from '../dist/render.js';
 import { buildFixture } from './fixture.mjs';
 
 const PptxGenJS = pptxgenModule.default ?? pptxgenModule;
@@ -149,6 +149,46 @@ describe('saving slides as pictures', () => {
     assert.equal(copy.danglingCount(), 0);
   });
 
+  test('reads lists of slide numbers', () => {
+    assert.deepEqual(parsePageList('1'), [1]);
+    assert.deepEqual(parsePageList(' 5, 1-3 ,2 '), [1, 2, 3, 5]);
+    assert.deepEqual(parsePageList('1～2，4、6 - 7；9'), [1, 2, 4, 6, 7, 9]);
+    assert.deepEqual(parsePageList('3 4'), [3, 4]);
+    for (const bad of ['', '0', '3-1', 'a', '1-', '1.5', '2-99999', ',']) {
+      assert.throws(() => parsePageList(bad), { code: 'error.pagesFormat' }, bad);
+    }
+  });
+
+  test('keeps only the chosen slides, in order, with their sections', async () => {
+    // Put the three slides in two sections, the way PowerPoint saves them.
+    const zip = await JSZip.loadAsync(colorDeck);
+    const xml = await zip.file('ppt/presentation.xml').async('string');
+    const ids = [...xml.matchAll(/<p:sldId id="(\d+)"/g)].map((m) => m[1]);
+    assert.equal(ids.length, 3);
+    const sections =
+      '<p:extLst><p:ext uri="{521415D9-36F7-43E2-AB2F-B90AF26B5E84}"><p14:sectionLst xmlns:p14="http://schemas.microsoft.com/office/powerpoint/2010/main">' +
+      `<p14:section name="一" id="{00000000-0000-0000-0000-000000000001}"><p14:sldIdLst><p14:sldId id="${ids[0]}"/><p14:sldId id="${ids[1]}"/></p14:sldIdLst></p14:section>` +
+      `<p14:section name="二" id="{00000000-0000-0000-0000-000000000002}"><p14:sldIdLst><p14:sldId id="${ids[2]}"/></p14:sldIdLst></p14:section>` +
+      '</p14:sectionLst></p:ext></p:extLst>';
+    const withSections = xml.includes('<p:extLst>') ? xml.replace('<p:extLst>', sections.slice(0, -'</p:extLst>'.length)) : xml.replace('</p:presentation>', `${sections}</p:presentation>`);
+    zip.file('ppt/presentation.xml', withSections);
+    const data = await zip.generateAsync({ type: 'nodebuffer' });
+
+    const deck = await prepareDeck(data, [3, 1, 3, 8]);
+    assert.deepEqual(deck.numbers, [1, 3]);
+    assert.equal(deck.total, 3);
+    const pkg = await OpcPackage.load(deck.data);
+    const presentation = (await pkg.read(deck.presentation)).toString('utf8');
+    assert.deepEqual([...presentation.matchAll(/<p:sldId\b[^>]*r:id="([^"]+)"/g)].map((m) => m[1]), deck.slides.map((s) => s.relId));
+    assert.deepEqual([...presentation.matchAll(/<p14:sldId id="(\d+)"/g)].map((m) => m[1]), [ids[0], ids[2]]);
+    assert.equal(presentation.split('<p14:section ').length, 3, 'both sections stay, the first now with one slide');
+    const slideRels = pkg.relsOf(deck.presentation).rels.filter((r) => r.type.endsWith('/slide'));
+    assert.deepEqual(slideRels.map((r) => r.part), deck.slides.map((s) => s.part));
+    assert.equal(pkg.danglingCount(), 0);
+
+    await assert.rejects(prepareDeck(data, [4, 9]), { code: 'error.noSuchPages', params: { count: 3 } });
+  });
+
   test('fits what a renderer drew to the slide, cropping padding and flattening onto white', async () => {
     // 1920 x 1083 like Quick Look: the (half-transparent) slide, then 3 rows of blue padding.
     const slide = await sharp({ create: { width: 1920, height: 1080, channels: 4, background: { r: 200, g: 0, b: 0, alpha: 0.5 } } }).png().toBuffer();
@@ -200,6 +240,19 @@ describe('saving slides as pictures', () => {
     }
   });
 
+  test('draws only the chosen slides, each named by its number', { skip: !mac }, async () => {
+    const out = path.join(dir, 'some');
+    const report = await renderSlides(colorDeck, out, { renderer: 'quicklook', width: 480, pages: [3, 1] });
+    assert.deepEqual(report.pages, [1, 3]);
+    assert.equal(report.slideCount, 3);
+    assert.deepEqual(await readdir(out), ['01.png', '03.png']);
+    assert.ok(near(await pixel(path.join(out, '01.png'), 350, 200), COLORS[0]));
+    assert.ok(near(await pixel(path.join(out, '03.png'), 350, 200), COLORS[2]));
+    // Exporting only the cover afterwards leaves only the cover.
+    await renderSlides(colorDeck, out, { renderer: 'quicklook', width: 480, pages: [1] });
+    assert.deepEqual(await readdir(out), ['01.png']);
+  });
+
   test('replaces an earlier export and leaves other files alone', { skip: !mac }, async () => {
     const out = path.join(dir, 'again');
     await renderSlides(fixture.data, out, { renderer: 'quicklook', width: 320 });
@@ -233,6 +286,10 @@ describe('saving slides as pictures', () => {
     assert.deepEqual(await readdir(result.output), ['01.jpg', '02.jpg', '03.jpg']);
     assert.ok(existsSync(path.join(folder, '汇报.pptm')));
     assert.deepEqual(await readFile(path.join(folder, '汇报.pptm')), colorDeck, 'the original is untouched');
+
+    const cover = await run(process.execPath, [CLI, 'images', path.join(folder, '汇报.pptm'), '-w', '320', '-p', '2', '--json']);
+    assert.deepEqual(JSON.parse(cover.stdout)[0].files, [path.join(folder, '汇报-slides', '02.png')]);
+    assert.deepEqual(await readdir(result.output), ['02.png']);
   });
 
   test('command line: refuses bad settings before reading any file', async () => {
@@ -247,5 +304,6 @@ describe('saving slides as pictures', () => {
     await bad(['--format', 'gif'], /--format/);
     await bad(['-w', '99999'], /图片宽度/);
     await bad(['--renderer', 'keynote'], /--renderer/);
+    await bad(['-p', '2-1'], /页码/);
   });
 });

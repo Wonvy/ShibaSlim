@@ -21,7 +21,7 @@
         <path d="M8 32h6M50 32h6M11 28l4 4-4 4M53 28l-4 4 4 4" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
       </svg>
       <div>
-        <div class="name"><h1>ShibaSlim</h1><span class="version" id="version" hidden></span></div>
+        <div class="title-line"><h1>ShibaSlim</h1><span class="version" id="version" hidden></span></div>
         <p class="tagline" data-t="gui.tagline"></p>
       </div>
     </div>
@@ -50,7 +50,14 @@
   <div class="banner" id="banner" hidden></div>
 
   <section class="card settings" data-t-aria="gui.settingsLabel">
-    <div class="field">
+    <div class="tasks" role="group" aria-labelledby="tasks-label">
+      <span class="tasks-label" id="tasks-label" data-t="gui.tasks"></span>
+      <label class="check" for="task-compress"><input type="checkbox" id="task-compress"><span data-t="gui.task.compress"></span></label>
+      <label class="check" for="task-sign"><input type="checkbox" id="task-sign"><span data-t="gui.task.sign"></span></label>
+      <label class="check" for="task-images" id="task-images-label"><input type="checkbox" id="task-images"><span data-t="gui.task.images"></span></label>
+    </div>
+
+    <div class="field" id="compress-fields">
       <div class="field-head">
         <label for="clarity" data-t="gui.clarity"></label>
         <output id="clarity-value" for="clarity">60</output>
@@ -69,26 +76,61 @@
     </div>
 
     <div class="field">
-      <div class="field-head"><label for="out-dir" data-t="gui.saveTo"></label></div>
-      <div class="path-row">
-        <input type="text" id="out-dir" spellcheck="false" autocomplete="off">
+      <div class="field-head"><span class="label" id="save-label" data-t="gui.saveTo"></span></div>
+      <div class="choices" id="place" role="radiogroup" aria-labelledby="save-label" hidden>
+        <label class="radio" for="place-beside"><input type="radio" name="place" id="place-beside" value="beside"><span data-t="gui.place.beside"></span></label>
+        <label class="radio" for="place-folder"><input type="radio" name="place" id="place-folder" value="folder"><span data-t="gui.place.folder"></span></label>
+      </div>
+      <div class="path-row" id="path-row">
+        <input type="text" id="out-dir" spellcheck="false" autocomplete="off" aria-labelledby="save-label">
         <button type="button" id="pick-dir" data-t="gui.pick"></button>
         <button type="button" id="open-dir" data-t="gui.open"></button>
       </div>
       <p class="hint" data-t="gui.saveHint"></p>
     </div>
 
-    <div class="field sign">
-      <label class="check" for="sign-on"><input type="checkbox" id="sign-on"><span data-t="gui.sign.toggle"></span></label>
-      <div id="sign-fields" hidden>
-        <div class="sign-row">
-          <label class="sub" for="sign-author"><span data-t="gui.sign.author"></span><input type="text" id="sign-author" maxlength="200" spellcheck="false" autocomplete="name"></label>
-          <label class="sub" for="sign-company"><span data-t="gui.sign.company"></span><input type="text" id="sign-company" maxlength="200" spellcheck="false" autocomplete="organization"></label>
-        </div>
-        <label class="check minor" for="sign-only"><input type="checkbox" id="sign-only"><span data-t="gui.sign.only"></span></label>
-        <p class="hint" id="sign-only-hint" data-t="gui.sign.onlyHint" hidden></p>
+    <div class="field section" id="sign-fields" hidden>
+      <div class="sign-row">
+        <label class="sub" for="sign-author"><span data-t="gui.sign.author"></span><input type="text" id="sign-author" maxlength="200" spellcheck="false" autocomplete="name"></label>
+        <label class="sub" for="sign-company"><span data-t="gui.sign.company"></span><input type="text" id="sign-company" maxlength="200" spellcheck="false" autocomplete="organization"></label>
       </div>
       <p class="hint" data-t="gui.sign.hint"></p>
+    </div>
+
+    <div class="field section" id="image-fields" hidden>
+      <div class="image-row">
+        <div class="sub">
+          <label for="image-width" data-t="gui.images.width"></label>
+          <div class="inline">
+            <select id="image-width">
+              <option value="1280">1280</option>
+              <option value="1920">1920</option>
+              <option value="2560">2560</option>
+              <option value="3840">3840</option>
+              <option value="custom" data-t="gui.images.custom"></option>
+            </select>
+            <input type="number" id="image-width-custom" min="160" max="7680" step="1" inputmode="numeric" data-t-aria="gui.images.width" hidden>
+            <span data-t="gui.images.px"></span>
+          </div>
+        </div>
+        <div class="sub">
+          <label for="image-format" data-t="gui.images.format"></label>
+          <select id="image-format">
+            <option value="png">PNG</option>
+            <option value="jpg">JPG</option>
+          </select>
+        </div>
+        <div class="sub">
+          <span id="pages-label" data-t="gui.images.pages"></span>
+          <div class="choices inline" role="radiogroup" aria-labelledby="pages-label">
+            <label class="radio" for="pages-all"><input type="radio" name="pages" id="pages-all" value="all"><span data-t="gui.images.pagesAll"></span></label>
+            <label class="radio" for="pages-cover"><input type="radio" name="pages" id="pages-cover" value="cover"><span data-t="gui.images.pagesCover"></span></label>
+            <label class="radio" for="pages-some"><input type="radio" name="pages" id="pages-some" value="some"><span data-t="gui.images.pagesSome"></span></label>
+            <input type="text" id="pages-list" spellcheck="false" autocomplete="off" data-t-placeholder="gui.images.pagesPlaceholder" data-t-aria="gui.images.pagesSome">
+          </div>
+        </div>
+      </div>
+      <p class="hint" data-t="gui.images.hint"></p>
     </div>
   </section>
 

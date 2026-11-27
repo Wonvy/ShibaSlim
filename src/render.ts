@@ -41,6 +41,11 @@ export interface RenderOptions {
   quality?: number;
   /** Use only this renderer. By default the best one available is used, then the next if it fails. */
   renderer?: RendererName;
+  /**
+   * The slides to save, by number (1 is the first, hidden slides count); all of them when left out.
+   * Numbers past the last slide are ignored. parsePageList reads them from text such as "1-3, 5".
+   */
+  pages?: number[];
   onProgress?: (progress: { done: number; total: number }) => void;
 }
 
@@ -48,8 +53,12 @@ export interface RenderReport {
   renderer: RendererName;
   /** Renderers tried before it that failed, and why. */
   failed: Array<{ renderer: RendererName; error: string }>;
-  /** The pictures written, one per slide, in slide order. */
+  /** The pictures written, one per slide saved, in slide order. */
   files: string[];
+  /** The number of the slide in each picture (1 is the first). */
+  pages: number[];
+  /** How many slides the presentation has. */
+  slideCount: number;
   width: number;
   height: number;
 }
@@ -64,8 +73,15 @@ export interface PreparedDeck {
   /** A plain .pptx in which every slide is shown and there is no stored preview picture. */
   data: Buffer;
   presentation: string;
-  /** The slides in show order: their relationship from the presentation, and their part. */
-  slides: Array<{ relId: string; part: string }>;
+  /**
+   * The slides to draw, in show order: their relationship from the presentation, their part, and the
+   * id the presentation's slide list and sections know them by.
+   */
+  slides: Array<{ relId: string; part: string; id: string }>;
+  /** The number of each slide in `slides` in the original presentation (1 is the first). */
+  numbers: number[];
+  /** How many slides the original presentation has. */
+  total: number;
   /** Slide size in EMU. */
   cx: number;
   cy: number;
@@ -73,6 +89,30 @@ export interface PreparedDeck {
 
 const PPTX_MAIN = 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml';
 const DEFAULT_SLIDE = { cx: 9144000, cy: 6858000 };
+/** The highest slide number a list may name; PowerPoint itself stops well short of it. */
+const MAX_PAGE = 9999;
+
+/**
+ * Reads a list of slide numbers such as "1-3, 5" (Chinese commas and 、 work too, and ~ for ranges):
+ * sorted, each once. Throws when the text is not such a list.
+ */
+export function parsePageList(spec: string): number[] {
+  const text = String(spec).trim();
+  const pages = new Set<number>();
+  const parts = text
+    .replace(/\s*[-–—~～]\s*/g, '-')
+    .split(/[\s,，、;；]+/)
+    .filter(Boolean);
+  for (const part of parts) {
+    const match = /^(\d+)(?:-(\d+))?$/.exec(part);
+    const first = Number(match?.[1]);
+    const last = match?.[2] === undefined ? first : Number(match[2]);
+    if (!match || first < 1 || last < first || last > MAX_PAGE) throw new SlimError('error.pagesFormat', { spec: text });
+    for (let n = first; n <= last; n++) pages.add(n);
+  }
+  if (pages.size === 0) throw new SlimError('error.pagesFormat', { spec: text });
+  return [...pages].sort((a, b) => a - b);
+}
 
 /**
  * Reads a presentation and makes the copy the renderers draw from: hidden slides are shown (so
@@ -80,7 +120,7 @@ const DEFAULT_SLIDE = { cx: 9144000, cy: 6858000 };
  * the first slide), and macro-enabled files, shows and templates become an ordinary .pptx (so
  * every renderer opens them the same way, and no macros come along).
  */
-export async function prepareDeck(data: Buffer): Promise<PreparedDeck> {
+export async function prepareDeck(data: Buffer, pages?: number[]): Promise<PreparedDeck> {
   const pkg = await OpcPackage.load(data);
   const root = pkg.relsOf('');
   const presentation = root?.rels.find((r) => r.part && r.type.endsWith('/officeDocument'))?.part;
@@ -88,18 +128,32 @@ export async function prepareDeck(data: Buffer): Promise<PreparedDeck> {
 
   const presentationRels = pkg.relsOf(presentation);
   const pres = parseXml(decodeXml(await pkg.read(presentation)));
-  const slides: PreparedDeck['slides'] = [];
+  const all: PreparedDeck['slides'] = [];
   for (const node of child(pres, 'sldIdLst')?.children ?? []) {
     if (node.local !== 'sldId') continue;
-    // sldId carries both a plain `id` and the relationship `r:id`; only the latter matters here.
+    // sldId carries both a plain `id` (used by sections) and the relationship `r:id`.
     const relId = Object.entries(node.attrs).find(([key]) => key.endsWith(':id'))?.[1];
     const rel = presentationRels?.rels.find((r) => r.id === relId && r.type.endsWith('/slide'));
-    if (relId && rel?.part) slides.push({ relId, part: rel.part });
+    if (relId && rel?.part) all.push({ relId, part: rel.part, id: node.attrs.id ?? '' });
   }
-  if (slides.length === 0) throw new SlimError('error.noSlides');
+  if (all.length === 0) throw new SlimError('error.noSlides');
   const size = child(pres, 'sldSz');
   const cx = Number(size?.attrs.cx);
   const cy = Number(size?.attrs.cy);
+
+  const numbers = pages
+    ? [...new Set(pages)].filter((n) => Number.isInteger(n) && n >= 1 && n <= all.length).sort((a, b) => a - b)
+    : all.map((_, i) => i + 1);
+  if (numbers.length === 0) throw new SlimError('error.noSuchPages', { count: all.length });
+  const slides = numbers.map((n) => all[n - 1]!);
+  if (slides.length < all.length) {
+    const kept = new Set(slides.map((s) => s.relId));
+    for (const rel of [...(presentationRels?.rels ?? [])]) {
+      if (rel.type.endsWith('/slide') && !kept.has(rel.id)) pkg.removeRel(presentationRels!, rel);
+    }
+    const xml = decodeXml(await pkg.read(presentation));
+    pkg.write(presentation, Buffer.from(keepSlides(xml, slides), 'utf8'));
+  }
 
   for (const { part } of slides) {
     const xml = decodeXml(await pkg.read(part));
@@ -117,6 +171,8 @@ export async function prepareDeck(data: Buffer): Promise<PreparedDeck> {
     data: await pkg.save({ fast: true }),
     presentation,
     slides,
+    numbers,
+    total: all.length,
     ...(cx > 0 && cy > 0 ? { cx, cy } : DEFAULT_SLIDE),
   };
 }
@@ -139,18 +195,27 @@ export async function singleSlideCopy(deck: PreparedDeck, index: number): Promis
     if (rel.type.endsWith('/slide') && rel.id !== keep.relId) pkg.removeRel(rels!, rel);
   }
   const xml = decodeXml(await pkg.read(deck.presentation));
-  pkg.write(deck.presentation, Buffer.from(keepOneSlide(xml, keep.relId), 'utf8'));
+  pkg.write(deck.presentation, Buffer.from(keepSlides(xml, [keep]), 'utf8'));
   pkg.prune();
   return pkg.save({ fast: true });
 }
 
-/** Leaves one entry in the slide list, and drops custom shows, which would name the slides that are gone. */
-function keepOneSlide(xml: string, relId: string): string {
+/**
+ * Leaves only `slides` in the presentation's slide list and in its sections, and drops custom shows,
+ * which would name slides that are gone.
+ */
+function keepSlides(xml: string, slides: ReadonlyArray<{ relId: string; id: string }>): string {
+  const relIds = new Set(slides.map((s) => s.relId));
+  const ids = new Set(slides.map((s) => s.id));
   return xml
     .replace(/<((?:[\w.-]+:)?)custShowLst\b[^>]*?(?:\/>|>[\s\S]*?<\/\1custShowLst>)/, '')
-    .replace(/<((?:[\w.-]+:)?)sldId\b([^>]*?)(?:\/>|>[\s\S]*?<\/\1sldId>)/g, (whole, _prefix: string, attrs: string) =>
-      /\s[\w.-]+:id\s*=\s*"([^"]*)"/.exec(attrs)?.[1] === relId ? whole : '',
-    );
+    .replace(/<((?:[\w.-]+:)?)sldId\b([^>]*?)(?:\/>|>[\s\S]*?<\/\1sldId>)/g, (whole, _prefix: string, attrs: string) => {
+      // The slide list names each slide by relationship; a section's list only by its plain id.
+      const relId = /\s[\w.-]+:id\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
+      if (relId !== undefined) return relIds.has(relId) ? whole : '';
+      const id = /\sid\s*=\s*"([^"]*)"/.exec(attrs)?.[1];
+      return id !== undefined && ids.has(id) ? whole : '';
+    });
 }
 
 /**
@@ -611,13 +676,14 @@ function oneAtATime<T>(task: () => Promise<T>): Promise<T> {
 const PICTURE_NAME = /^\d+\.(?:png|jpg)$/i;
 
 /**
- * Saves every slide of a presentation as a picture in `outDir`: 01.png, 02.png... in slide order,
- * hidden slides included. Pictures an earlier export left in that folder are replaced.
+ * Saves the slides of a presentation as pictures in `outDir`, each named by its slide number: 01.png,
+ * 02.png... in slide order, hidden slides included (all slides unless `options.pages` names some).
+ * Pictures an earlier export left in that folder are replaced.
  */
 export async function renderSlides(input: string | Buffer, outDir: string, options: RenderOptions = {}): Promise<RenderReport> {
   const { width, format, quality } = checkRenderOptions(options);
   const candidates = await chooseRenderers(options.renderer);
-  const deck = await prepareDeck(typeof input === 'string' ? await readFile(input) : input);
+  const deck = await prepareDeck(typeof input === 'string' ? await readFile(input) : input, options.pages);
   const size = { width, height: Math.max(1, Math.round((width * deck.cy) / deck.cx)) };
 
   return oneAtATime(async () => {
@@ -643,8 +709,8 @@ export async function renderSlides(input: string | Buffer, outDir: string, optio
           failed.push({ renderer, error: err instanceof Error ? err.message : String(err) });
           continue;
         }
-        const files = await savePictures(pictures, outDir, format);
-        return { renderer: drawn.renderer ?? renderer, failed, files, ...size };
+        const files = await savePictures(pictures, deck, outDir, format);
+        return { renderer: drawn.renderer ?? renderer, failed, files, pages: deck.numbers, slideCount: deck.total, ...size };
       } finally {
         // On Windows a file an application still holds cannot be removed; never let that hide the result.
         await rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
@@ -654,17 +720,17 @@ export async function renderSlides(input: string | Buffer, outDir: string, optio
   });
 }
 
-/** Copies the finished pictures into place, only once every slide has been drawn. */
-async function savePictures(pictures: string[], outDir: string, format: ImageFormat): Promise<string[]> {
+/** Copies the finished pictures into place, named by slide number, only once every slide has been drawn. */
+async function savePictures(pictures: string[], deck: PreparedDeck, outDir: string, format: ImageFormat): Promise<string[]> {
   await mkdir(outDir, { recursive: true });
-  // An earlier export may have had more slides, or used the other format.
+  // An earlier export may have had other slides, or used the other format.
   for (const name of await readdir(outDir)) {
     if (PICTURE_NAME.test(name)) await rm(path.join(outDir, name), { force: true });
   }
-  const digits = Math.max(2, String(pictures.length).length);
+  const digits = Math.max(2, String(deck.total).length);
   const files: string[] = [];
   for (const [i, picture] of pictures.entries()) {
-    const file = path.join(outDir, `${String(i + 1).padStart(digits, '0')}.${format}`);
+    const file = path.join(outDir, `${String(deck.numbers[i]).padStart(digits, '0')}.${format}`);
     await copyFile(picture, file);
     files.push(file);
   }

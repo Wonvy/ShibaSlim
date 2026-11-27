@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -74,8 +74,8 @@ describe('gui server', () => {
     assert.equal(res.status, 200);
     const script = await res.text();
     assert.match(script, /window\.ShibaI18n = I/);
-    assert.match(script, /"gui\.start":"开始压缩"/);
-    assert.match(script, /"gui\.start":"Start"/);
+    assert.match(script, /"gui\.clear":"清空"/);
+    assert.match(script, /"gui\.clear":"Clear"/);
     assert.ok(!script.includes('"preview.'), 'the comparison page messages are not needed here');
   });
 
@@ -121,6 +121,7 @@ describe('gui server', () => {
       reveal: async (file) => void calls.push(['reveal', file]),
       openFolder: async (dir) => void calls.push(['openFolder', dir]),
       pickFolder: async (prompt) => (calls.push(['pickFolder', prompt]), '/picked/folder'),
+      pickFiles: async (prompt) => (calls.push(['pickFiles', prompt]), null),
       openPreview: async (url, title) => void calls.push(['openPreview', url, title]),
     };
     const desktop = await startGui({ port: 0, defaultOutDir: outDir, desktop: true, shell });
@@ -144,13 +145,18 @@ describe('gui server', () => {
       assert.equal(page.status, 200);
       assert.match(await page.text(), /<h1>deck\.pptx<\/h1>/);
 
-      await api('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir } });
+      await api('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 60, outDir } });
       for (let i = 0; i < 300 && (await api('/api/state')).data.files[0].state !== 'done'; i++) await new Promise((r) => setTimeout(r, 100));
       assert.equal((await api(`/api/reveal/${entry.id}`, { method: 'POST' })).status, 200);
       assert.deepEqual(calls.find(([kind]) => kind === 'reveal'), ['reveal', path.join(outDir, 'deck.slim.pptx')]);
       assert.equal((await api('/api/open-dir', { method: 'POST', body: { path: outDir } })).status, 200);
       assert.deepEqual(calls.find(([kind]) => kind === 'openFolder'), ['openFolder', outDir]);
       assert.deepEqual((await api('/api/pick-dir', { method: 'POST' })).data, { path: '/picked/folder' });
+      // Files are added through the app's own dialog, which gives their places rather than copies.
+      assert.equal((await api('/api/state')).data.nativeFiles, true);
+      const picked = await api('/api/pick-inputs', { method: 'POST', body: { folder: false } });
+      assert.deepEqual(picked.data, { added: 0, skipped: 0, duplicate: 0, cancelled: true });
+      assert.deepEqual(calls.at(-1), ['pickFiles', '选择要处理的 PowerPoint 文件']);
     } finally {
       await desktop.close();
       await rm(outDir, { recursive: true, force: true });
@@ -191,13 +197,13 @@ describe('gui server', () => {
     assert.equal(entry.rel, '课件/第一章/a.pptx');
     assert.equal(entry.size, fixture.data.length);
 
-    const queued = await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir } });
+    const queued = await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 60, outDir } });
     assert.deepEqual(queued.data, { queued: 1 });
     const done = await waitFor(entry.id);
     assert.equal(done.state, 'done', done.error);
     assert.equal(done.output, path.join(outDir, '课件', '第一章', 'a.slim.pptx'));
     assert.ok(done.result.after < done.result.before * 0.3);
-    assert.equal(done.result.clarity, 60);
+    assert.equal(done.result.settings.clarity, 60);
 
     const written = await readFile(done.output);
     await JSZip.loadAsync(written);
@@ -207,7 +213,7 @@ describe('gui server', () => {
     assert.match(download.headers.get('content-disposition'), /filename\*=UTF-8''a\.slim\.pptx/);
 
     // Compressing the same file again replaces its own earlier result.
-    await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 30, outDir } });
+    await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 30, outDir } });
     const again = await waitFor(entry.id);
     assert.equal(again.output, done.output);
     assert.ok(again.result.after < done.result.after);
@@ -220,7 +226,7 @@ describe('gui server', () => {
     await writeFile(original, 'original');
     await writeFile(earlier, 'earlier result');
     const { data: entry } = await upload('keep.pptx');
-    await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir } });
+    await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 60, outDir } });
     const done = await waitFor(entry.id);
     assert.equal(done.output, path.join(outDir, 'keep.slim (2).pptx'));
     assert.equal(await readFile(original, 'utf8'), 'original');
@@ -228,14 +234,14 @@ describe('gui server', () => {
 
     // Compressing a result again does not pile up suffixes.
     const { data: again } = await upload('keep.slim.pptx');
-    await call('/api/compress', { method: 'POST', body: { ids: [again.id], clarity: 60, outDir } });
+    await call('/api/start', { method: 'POST', body: { compress: true, ids: [again.id], clarity: 60, outDir } });
     assert.equal((await waitFor(again.id)).output, path.join(outDir, 'keep.slim (3).pptx'));
   });
 
   test('reports a broken upload as an error and keeps going', async () => {
     const { data: broken } = await upload('broken.pptx', undefined, Buffer.from('not a zip'));
     const { data: good } = await upload('good.pptx');
-    await call('/api/compress', { method: 'POST', body: { ids: [broken.id, good.id], clarity: 60, outDir } });
+    await call('/api/start', { method: 'POST', body: { compress: true, ids: [broken.id, good.id], clarity: 60, outDir } });
     const failed = await waitFor(broken.id);
     assert.equal(failed.state, 'error');
     assert.equal(failed.error.code, 'error.notZip');
@@ -246,7 +252,7 @@ describe('gui server', () => {
   test('attributes results when asked, and shows the signature a dropped file carries', async () => {
     const { data: entry } = await upload('署名.pptx');
     const attribution = { author: ' 张三 ', company: '柴犬' };
-    await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir, attribution } });
+    await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 60, outDir, attribution } });
     const done = await waitFor(entry.id);
     assert.equal(done.state, 'done', JSON.stringify(done.error));
     assert.deepEqual([done.result.author, done.result.company, done.result.signed], ['张三', '柴犬', true]);
@@ -266,24 +272,25 @@ describe('gui server', () => {
     assert.deepEqual(seen.signature, { status: 'valid', author: '张三', company: '柴犬', signedAt: check.signedAt, fingerprint: check.fingerprint, mine: true });
 
     // Attribution only: the result is named .signed and its media are the source's, byte for byte.
-    await call('/api/compress', { method: 'POST', body: { ids: [back.id], clarity: 30, outDir, attribution, signOnly: true } });
+    await call('/api/start', { method: 'POST', body: { compress: false, ids: [back.id], clarity: 30, outDir, attribution } });
     const signed = await waitFor(back.id);
     assert.equal(signed.state, 'done', JSON.stringify(signed.error));
     assert.equal(signed.output, path.join(outDir, 'back.signed.pptx'));
-    assert.equal(signed.result.signOnly, true);
+    assert.equal(signed.result.settings.compress, false);
     const source = await JSZip.loadAsync(await readFile(done.output));
     const result = await JSZip.loadAsync(await readFile(signed.output));
     for (const name of Object.keys(source.files).filter((n) => n.startsWith('ppt/media/') && !source.files[n].dir)) {
       assert.ok((await source.file(name).async('nodebuffer')).equals(await result.file(name).async('nodebuffer')), name);
     }
     assert.equal((await checkSignatureOf(await readFile(signed.output))).status, 'valid');
-    const noAuthor = await call('/api/compress', { method: 'POST', body: { ids: [back.id], clarity: 60, outDir, signOnly: true } });
-    assert.equal(noAuthor.status, 400);
+    const nothing = await call('/api/start', { method: 'POST', body: { compress: false, ids: [back.id], clarity: 60, outDir } });
+    assert.equal(nothing.status, 400);
+    assert.equal(nothing.data.code, 'error.noTask');
 
-    const missing = await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir, attribution: { author: '  ' } } });
+    const missing = await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 60, outDir, attribution: { author: '  ' } } });
     assert.equal(missing.status, 400);
     assert.equal(missing.data.code, 'error.authorMissing');
-    const malformed = await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir, attribution: { author: 5 } } });
+    const malformed = await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 60, outDir, attribution: { author: 5 } } });
     assert.equal(malformed.status, 400);
   });
 
@@ -300,8 +307,8 @@ describe('gui server', () => {
 
   test('validates settings', async () => {
     const { data: entry } = await upload('v.pptx');
-    assert.equal((await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 0, outDir } })).status, 400);
-    const relative = await call('/api/compress', { method: 'POST', body: { ids: [entry.id], clarity: 60, outDir: 'relative/dir' } });
+    assert.equal((await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 0, outDir } })).status, 400);
+    const relative = await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 60, outDir: 'relative/dir' } });
     assert.equal(relative.status, 400);
     assert.match(relative.data.error, /完整路径/);
   });
@@ -362,7 +369,8 @@ describe('gui server', () => {
     const { data: state } = await call('/api/state');
     assert.equal(state.slideImages, process.platform === 'darwin' || process.platform === 'win32');
     const { data: entry } = await upload('页面.pptx', 'deck/页面.pptx');
-    const res = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir } });
+    const images = { width: 640, format: 'png', pages: 'all' };
+    const res = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir, images } });
     if (process.platform === 'linux') {
       assert.equal(res.data.code, 'error.noRenderer');
       return;
@@ -375,14 +383,116 @@ describe('gui server', () => {
     assert.deepEqual(readdirSync(res.data.dir), ['01.png', '02.png', '03.png', '04.png', '05.png', '06.png', '07.png', '08.png', '09.png']);
 
     // Saving again replaces the file's own pictures; another file of the same name gets a folder of its own.
-    const again = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir } });
+    const again = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir, images } });
     assert.equal(again.data.dir, res.data.dir);
     const { data: other } = await upload('页面.pptx', 'deck/页面.pptx');
-    const second = await call(`/api/images/${other.id}`, { method: 'POST', body: { outDir } });
+    const second = await call(`/api/images/${other.id}`, { method: 'POST', body: { outDir, images } });
     assert.equal(second.data.dir, path.join(outDir, 'deck', '页面-slides (2)'));
 
-    const relative = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir: 'relative/dir' } });
+    const relative = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir: 'relative/dir', images } });
     assert.equal(relative.data.code, 'error.outDirRelative');
+    const badPages = await call(`/api/images/${entry.id}`, { method: 'POST', body: { outDir, images: { ...images, pages: '3-1' } } });
+    assert.equal(badPages.data.code, 'error.pagesFormat');
+  });
+
+  test('adds files by their place on disk and saves results in a ShibaSlim folder next to them', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
+    try {
+      const deck = path.join(home, '汇报.pptx');
+      await writeFile(deck, fixture.data);
+      // A folder with a sub-folder, plus things that are not to be added: an earlier result, a lock file,
+      // a hidden file and ShibaSlim's own folder.
+      const folder = path.join(home, '项目');
+      await mkdir(path.join(folder, '二季度', 'ShibaSlim'), { recursive: true });
+      await writeFile(path.join(folder, '二季度', 'b.pptx'), fixture.data);
+      await writeFile(path.join(folder, 'a.pptx'), fixture.data);
+      await writeFile(path.join(folder, 'a.slim.pptx'), fixture.data);
+      await writeFile(path.join(folder, '~$a.pptx'), 'lock');
+      await writeFile(path.join(folder, '.hidden.pptx'), fixture.data);
+      await writeFile(path.join(folder, '二季度', 'ShibaSlim', 'b.slim (2).pptx'), fixture.data);
+      await writeFile(path.join(home, 'notes.txt'), 'not a presentation');
+
+      const added = await call('/api/add', { method: 'POST', body: { paths: [deck, folder, path.join(home, 'notes.txt'), 'relative.pptx'] } });
+      assert.deepEqual(added.data, { added: 3, skipped: 2, duplicate: 0 });
+      const listed = (await call('/api/state')).data.files.filter((f) => f.local);
+      assert.deepEqual(listed.map((f) => f.rel).sort(), ['汇报.pptx', '项目/a.pptx', '项目/二季度/b.pptx']);
+      assert.deepEqual((await call('/api/add', { method: 'POST', body: { paths: [deck] } })).data, { added: 0, skipped: 0, duplicate: 1 });
+
+      const entry = listed.find((f) => f.rel === '汇报.pptx');
+      const nested = listed.find((f) => f.rel === '项目/二季度/b.pptx');
+      const attribution = { author: '张三' };
+      await call('/api/start', { method: 'POST', body: { ids: [entry.id, nested.id], compress: true, clarity: 60, attribution, outDir, beside: true } });
+      const done = await waitFor(entry.id);
+      assert.equal(done.state, 'done', JSON.stringify(done.error));
+      assert.equal(done.output, path.join(home, 'ShibaSlim', '汇报.slim.pptx'));
+      assert.equal(done.result.author, '张三');
+      assert.equal((await waitFor(nested.id)).output, path.join(folder, '二季度', 'ShibaSlim', 'b.slim.pptx'));
+      // Only the next-to-the-file choice puts results there; the save folder is used otherwise.
+      await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 60, outDir, beside: false } });
+      assert.equal((await waitFor(entry.id)).output, path.join(outDir, '汇报.slim.pptx'));
+
+      // Removing a file added by path leaves the original alone.
+      for (const f of listed) await call(`/api/files/${f.id}`, { method: 'DELETE' });
+      assert.ok((await readFile(deck)).equals(fixture.data));
+      assert.ok(existsSync(path.join(folder, 'a.pptx')));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test('does any combination of compressing, attributing and saving slides as pictures in one run', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
+    try {
+      const deck = path.join(home, '全部.pptx');
+      await writeFile(deck, fixture.data);
+      await call('/api/add', { method: 'POST', body: { paths: [deck] } });
+      const entry = (await call('/api/state')).data.files.find((f) => f.rel === '全部.pptx');
+      const images = { width: 320, format: 'jpg', pages: '2, 4-5, 99' };
+      const queued = await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 40, attribution: { author: '李四' }, images, outDir, beside: true } });
+      if (process.platform === 'linux' || (process.platform === 'win32' && queued.data.code === 'error.noRendererWindows')) {
+        assert.equal(queued.status, 400);
+        return;
+      }
+      assert.equal(queued.status, 200, JSON.stringify(queued.data));
+      const done = await waitFor(entry.id);
+      assert.equal(done.state, 'done', JSON.stringify(done.error));
+      const results = path.join(home, 'ShibaSlim');
+      assert.equal(done.output, path.join(results, '全部.slim.pptx'));
+      assert.equal(done.result.author, '李四');
+      assert.ok(done.result.after < done.result.before);
+      // Pictures keep their slide numbers; numbers past the last slide are left out.
+      assert.equal(done.slidesDir, path.join(results, '全部-slides'));
+      assert.deepEqual(readdirSync(done.slidesDir), ['02.jpg', '04.jpg', '05.jpg']);
+      assert.equal(done.result.pictures.count, 3);
+      assert.deepEqual(done.result.settings.images, images);
+      assert.equal((await sharp(path.join(done.slidesDir, '02.jpg')).metadata()).width, 320);
+
+      // Pictures alone: no presentation is written, and the cover replaces the earlier pictures.
+      await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: false, images: { ...images, pages: 'cover' }, outDir, beside: true } });
+      const cover = await waitFor(entry.id);
+      assert.equal(cover.state, 'done', JSON.stringify(cover.error));
+      assert.equal(cover.output, undefined);
+      assert.equal(cover.result.before, undefined);
+      assert.deepEqual(readdirSync(cover.slidesDir), ['01.jpg']);
+      await call(`/api/files/${entry.id}`, { method: 'DELETE' });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test('checks picture settings before anything is queued', async () => {
+    const { data: entry } = await upload('p.pptx');
+    const body = (images) => ({ ids: [entry.id], compress: false, images, outDir });
+    const bad = async (images) => (await call('/api/start', { method: 'POST', body: body(images) })).data.code;
+    if (process.platform === 'linux') {
+      assert.equal(await bad({ width: 1920, format: 'png', pages: 'all' }), 'error.noRenderer');
+    } else {
+      assert.equal(await bad({ width: 100, format: 'png', pages: 'all' }), 'error.widthRange');
+      assert.equal(await bad({ width: 1920, format: 'gif', pages: 'all' }), 'error.imageFormat');
+      assert.equal(await bad({ width: 1920, format: 'png', pages: '1,,x' }), 'error.pagesFormat');
+    }
+    assert.equal((await call('/api/state')).data.files.find((f) => f.id === entry.id).state, 'waiting');
+    await call(`/api/files/${entry.id}`, { method: 'DELETE' });
   });
 
   test('removes files from the list', async () => {

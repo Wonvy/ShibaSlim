@@ -35,6 +35,7 @@ import {
   RENDERER_NAMES,
   checkRenderOptions,
   chooseRenderers,
+  parsePageList,
   renderSlides,
   slidesDirFor,
   type ImageFormat,
@@ -369,12 +370,14 @@ async function runVerify(argv: string[]): Promise<number> {
 
 const IMAGES_HELP = `用法: shibaslim images <文件|目录|通配符 ...> [选项]
 
-把每一页幻灯片导出成图片，放在原文件旁边的 <名称>-slides 文件夹里（01.png、02.png…），
+把幻灯片导出成图片，放在原文件旁边的 <名称>-slides 文件夹里，以页码命名（01.png、02.png…），
 隐藏的幻灯片也会导出。再次导出时，会替换这个文件夹里之前导出的图片。
 
 示例:
   shibaslim images 汇报.pptx               生成 汇报-slides/01.png、02.png…
   shibaslim images ./课件 -r -w 1280 --format jpg
+  shibaslim images 汇报.pptx -p 1          只导出封面（第 1 页）
+  shibaslim images 汇报.pptx -p 1-3,5      只导出第 1、2、3、5 页
 
 用什么画:
   默认自动选择这台电脑上最好的一个，失败时换下一个：
@@ -387,6 +390,7 @@ const IMAGES_HELP = `用法: shibaslim images <文件|目录|通配符 ...> [选
   -w, --width <像素>      图片宽度，默认 ${DEFAULT_IMAGE_WIDTH}（16:9 的幻灯片即 1920×1080），高度按幻灯片比例
       --format <格式>     png（默认）或 jpg
   -q, --quality <1-100>   jpg 的质量，默认 90
+  -p, --pages <页码>      只导出这些页，如 1 或 1-3,5（隐藏的页也算页码）；默认全部
       --renderer <名称>   只用这一个：${RENDERER_NAMES.join('、')}
   -o, --out-dir <目录>    输出目录（保持子目录结构）
   -r, --recursive         递归处理子目录
@@ -410,6 +414,7 @@ async function runImages(argv: string[]): Promise<number> {
       width: { type: 'string', short: 'w' },
       format: { type: 'string' },
       quality: { type: 'string', short: 'q' },
+      pages: { type: 'string', short: 'p' },
       renderer: { type: 'string' },
       'out-dir': { type: 'string', short: 'o' },
       recursive: { type: 'boolean', short: 'r' },
@@ -436,6 +441,7 @@ async function runImages(argv: string[]): Promise<number> {
     if (!(RENDERER_NAMES as readonly string[]).includes(renderer)) throw new UsageError(`--renderer 只能是 ${RENDERER_NAMES.join('、')}`);
     options.renderer = renderer as RendererName;
   }
+  if (values.pages !== undefined) options.pages = parsePageList(values.pages);
   // Settings and the renderer are checked once, before any file, rather than failing on every one.
   checkRenderOptions(options);
   await chooseRenderers(options.renderer);

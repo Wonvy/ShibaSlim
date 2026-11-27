@@ -19,9 +19,13 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use serde_json::json;
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::window::Color;
-use tauri::{AppHandle, Manager, RunEvent, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, DragDropEvent, Manager, RunEvent, Theme, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
+};
 
 use engine::Engine;
 
@@ -77,10 +81,11 @@ fn main() {
                 // close; reacting to the window being destroyed would also fire while the app restarts
                 // after an update, and exiting from there would cancel the restart.)
                 let handle = app.handle().clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { .. } = event {
-                        handle.exit(0);
-                    }
+                let page = window.clone();
+                window.on_window_event(move |event| match event {
+                    WindowEvent::CloseRequested { .. } => handle.exit(0),
+                    WindowEvent::DragDrop(drop) => forward_drop(&page, drop),
+                    _ => {}
                 });
                 if let Err(message) = engine::start(app.handle(), &engine, window.clone()) {
                     engine::show_error(&engine, &window, &message);
@@ -109,8 +114,7 @@ fn main_window(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<WebviewWi
         .min_inner_size(520.0, 560.0)
         // Shown once the startup screen has painted, in the system's light or dark colours.
         .visible(false)
-        // Let the page receive dropped files and folders as ordinary HTML drag and drop.
-        .disable_drag_drop_handler()
+        // Dropped files and folders are taken natively, so the page learns where they are (see forward_drop).
         .on_navigation(move |url| {
             if is_app_page(url) || navigation.serves(url) {
                 return true;
@@ -148,6 +152,23 @@ fn main_window(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<WebviewWi
         let _ = fallback.show();
     });
     Ok(window)
+}
+
+/// Files and folders dragged onto the window, handed to the page by their paths: in a web page a drop
+/// only gives the files' contents, and results are meant to go next to the originals.
+fn forward_drop(window: &WebviewWindow, event: &DragDropEvent) {
+    let message = match event {
+        // Only files and folders: dragging text or a picture over the window is not adding anything.
+        DragDropEvent::Enter { paths, .. } if !paths.is_empty() => json!({ "type": "enter" }),
+        DragDropEvent::Leave => json!({ "type": "leave" }),
+        DragDropEvent::Drop { paths, .. } => {
+            let paths: Vec<String> = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect();
+            json!({ "type": "drop", "paths": paths })
+        }
+        _ => return,
+    };
+    // Only the engine's page defines the handler; the startup screen ignores drops.
+    let _ = window.eval(format!("window.shibaslimDrop && window.shibaslimDrop({message})"));
 }
 
 /// A comparison page, in a window of its own.
