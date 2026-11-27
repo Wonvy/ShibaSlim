@@ -248,6 +248,29 @@ describe('attribution', () => {
     assert.equal(await (await open(same)).text('ppt/slides/slide1.xml'), await (await open(again)).text('ppt/slides/slide1.xml'));
   });
 
+  test('keeps one attribution per name, whatever became of earlier ones', async () => {
+    const shape = (id, name) => `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${name}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/></p:sp>`;
+    // [name as found, the shape's own name]
+    const names = [
+      ['图片 3 · © 张三 · © 张三', '图片 3'], // already stacked
+      ['文本框 4・©张三', '文本框 4'], // full-width dot, no spaces
+      ['标题 1 · © 张三', '标题 1'], // non-breaking spaces
+      ['Logo • © 王五 · © 张三', 'Logo'], // another dot, then a second author
+      ['图片 9 &#183; &#169; 张三', '图片 9'], // written as character references
+      ['副标题 ·​© 张三', '副标题'], // a zero-width space
+      ['© 2024 公司标志', '© 2024 公司标志'], // the shape's own ©, with no dot before it
+      ['A·B 示意图', 'A·B 示意图'], // a dot with no © after it
+    ];
+    const extra = names.map(([name], i) => shape(20 + i, name)).join('');
+    const data = await edit(fixture.data, 'ppt/slides/slide1.xml', (xml) => xml.replace('</p:spTree>', `${extra}</p:spTree>`));
+    const expected = names.map(([, own]) => `${own} · © 李四`);
+    const signed = (await attributeBuffer(data, { author: '李四', signingKey: false })).output;
+    assert.deepEqual(shapeNames(await (await open(signed)).text('ppt/slides/slide1.xml')).slice(2), expected);
+    // Signing again, by anyone, still leaves one.
+    const twice = (await optimizeBuffer(signed, { attribution: { author: '李四', signingKey: false } })).output;
+    assert.deepEqual(shapeNames(await (await open(twice)).text('ppt/slides/slide1.xml')).slice(2), expected);
+  });
+
   test('creates the property parts when a file has none', async () => {
     const zip = await JSZip.loadAsync(fixture.data);
     zip.remove('docProps/core.xml');

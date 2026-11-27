@@ -316,8 +316,8 @@ async function nameShapes(pkg: OpcPackage, author: string): Promise<void> {
 /**
  * Appends " · © author" to the name of every shape on the slide (groups and the shapes in them
  * included), which is what the selection pane and the animation pane list. A name that already
- * carries an attribution has it replaced, so running again does not add up. The slide's own root
- * group is left alone: it is not a shape anyone sees.
+ * carries an attribution, even one an editor has since reworded, has it replaced, so a name never
+ * holds more than one. The slide's own root group is left alone: it is not a shape anyone sees.
  */
 function nameSlideShapes(source: string, author: string): string {
   const tree = /<((?:[\w.-]+:)?)spTree(?=[\s>])/.exec(source);
@@ -343,14 +343,24 @@ function nameSlideShapes(source: string, author: string): string {
 
 /** Separates a shape's own name from the attribution after it; an unnamed shape gets it too, so a later run can find it. */
 const NAME_MARK = ' · © ';
+/**
+ * An attribution already in a name, also after it has been retyped or passed through other programs:
+ * any middle dot (· ・ • ∙ ‧ ･ ⋅), then ©, with any spaces around them (none, non-breaking, full-width,
+ * zero-width). A © with no dot before it, as in "© 2024 Logo", is part of the shape's own name.
+ */
+const ATTRIBUTION_RE = /[\s\u200b]*[\u00b7\u30fb\u2022\u2219\u2027\uff65\u22c5][\s\u200b]*\u00a9/;
 /** Attributes of a start tag, quoted values allowed to hold ">". */
 const ATTRS = `\\s+[^\\s=/>]+\\s*=\\s*(?:"[^"]*"|'[^']*')`;
 const CNVPR_RE = new RegExp(`<((?:[\\w.-]+:)?)cNvPr((?:${ATTRS})*)\\s*(/?)>`, 'g');
 const NAME_ATTR_RE = /\sname\s*=\s*(?:"([^"]*)"|'([^']*)')/;
 
+/**
+ * A shape's own name: everything before the first attribution. Whatever follows it is attribution too,
+ * so names that collected several (copied between files, or signed by other tools) come back to one.
+ */
 function withoutAttribution(name: string): string {
-  const at = name.indexOf(NAME_MARK);
-  return at < 0 ? name : name.slice(0, at);
+  const found = ATTRIBUTION_RE.exec(name);
+  return found ? name.slice(0, found.index) : name;
 }
 
 function isOldMarker(shape: string): boolean {
