@@ -128,6 +128,8 @@ button.ghost:hover:not(:disabled) { background: var(--soft); color: var(--text);
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo { width: 40px; height: 40px; flex: none; }
 h1 { margin: 0; font-size: 20px; line-height: 1.2; }
+.name { display: flex; align-items: baseline; gap: 8px; }
+.version { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; padding: 0 7px; border: 1px solid var(--line); border-radius: 999px; line-height: 18px; }
 .tagline { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 
 .banner {

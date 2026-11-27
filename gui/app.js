@@ -33,6 +33,7 @@ const el = {
   start: document.getElementById('start'),
   quit: document.getElementById('quit'),
   update: document.getElementById('update'),
+  version: document.getElementById('version'),
   fileInput: document.getElementById('file-input'),
   folderInput: document.getElementById('folder-input'),
   overlay: document.getElementById('overlay'),
@@ -780,6 +781,10 @@ async function init() {
   document.documentElement.classList.toggle('desktop', state.desktop);
   document.documentElement.classList.toggle('no-slide-images', data.slideImages !== true);
   el.quit.hidden = state.desktop;
+  if (data.version) {
+    el.version.textContent = `v${data.version}`;
+    el.version.hidden = false;
+  }
   state.appVersion = data.canUpdate ? data.appVersion : null;
   el.update.hidden = !data.canUpdate;
   renderUpdateTitle();

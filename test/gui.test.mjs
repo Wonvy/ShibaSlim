@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
@@ -89,6 +89,7 @@ describe('gui server', () => {
     const browser = (await call('/api/state')).data;
     assert.equal(browser.desktop, false);
     assert.equal(browser.canUpdate, false);
+    assert.equal(browser.version, JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version, 'the page shows the engine version');
     assert.equal((await call('/api/check-update', { method: 'POST' })).status, 404);
 
     const outDir = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
@@ -100,6 +101,7 @@ describe('gui server', () => {
       const state = await (await api('/api/state')).json();
       assert.equal(state.desktop, true);
       assert.equal(state.appVersion, '1.2.3');
+      assert.equal(state.version, '1.2.3', 'the desktop app shows its own version');
       assert.equal(state.canUpdate, true);
       assert.equal((await api('/api/check-update', { method: 'POST' })).status, 200);
       assert.equal(checks, 1);

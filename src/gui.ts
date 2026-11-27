@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, rmSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +16,9 @@ import { t, runtimeScript, type Locale, type MessageKey, type Params } from './m
 import { OpcPackage, SlimError } from './opc.js';
 import { attributeFile, optimizeFile, thumbnailOf, type AttributeReport, type OptimizeReport } from './optimize.js';
 import { SLIDES_SUFFIX, renderSlides } from './render.js';
+
+/** This engine's version, shown next to the app name (the desktop app's own version wins when given). */
+const ENGINE_VERSION = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
 
 /** A fixed port keeps the page's address stable, so its saved settings survive restarts. */
 export const DEFAULT_PORT = 51735;
@@ -394,7 +398,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (resource === 'state' && method === 'GET') {
-      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate), nativePreview: Boolean(options.shell), slideImages: SLIDE_IMAGES });
+      return json(res, { files: [...entries.values()].map(view), claritySettings, defaultClarity: DEFAULT_CLARITY, defaultOutDir: fallbackOutDir, platform: process.platform, desktop: options.desktop === true, version: options.appVersion ?? ENGINE_VERSION, appVersion: options.appVersion ?? null, canUpdate: Boolean(options.onCheckUpdate), nativePreview: Boolean(options.shell), slideImages: SLIDE_IMAGES });
     }
 
     if (resource === 'events' && method === 'GET') {

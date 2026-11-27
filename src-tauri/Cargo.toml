@@ -1,6 +1,6 @@
 [package]
 name = "shibaslim"
-version = "0.2.2"
+version = "0.3.0"
 description = "ShibaSlim desktop app: compress the images inside PowerPoint files"
 authors = ["Wonvy"]
 license = "MIT"
