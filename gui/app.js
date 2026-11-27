@@ -15,17 +15,15 @@ const el = {
   banner: document.getElementById('banner'),
   theme: document.getElementById('theme'),
   lang: document.getElementById('lang'),
+  settings: document.getElementById('settings'),
   clarity: document.getElementById('clarity'),
   clarityValue: document.getElementById('clarity-value'),
-  clarityDetail: document.getElementById('clarity-detail'),
   presets: document.querySelectorAll('[data-clarity]'),
   taskCompress: document.getElementById('task-compress'),
   taskSign: document.getElementById('task-sign'),
   taskImages: document.getElementById('task-images'),
   compressFields: document.getElementById('compress-fields'),
   place: document.getElementById('place'),
-  placeBeside: document.getElementById('place-beside'),
-  placeFolder: document.getElementById('place-folder'),
   pathRow: document.getElementById('path-row'),
   outDir: document.getElementById('out-dir'),
   pickDir: document.getElementById('pick-dir'),
@@ -36,8 +34,9 @@ const el = {
   imageFields: document.getElementById('image-fields'),
   imageWidth: document.getElementById('image-width'),
   imageWidthCustom: document.getElementById('image-width-custom'),
+  imageWidthCustomWrap: document.getElementById('image-width-custom-wrap'),
   imageFormat: document.getElementById('image-format'),
-  pages: document.querySelectorAll('input[name="pages"]'),
+  imagePages: document.getElementById('image-pages'),
   pagesList: document.getElementById('pages-list'),
   empty: document.getElementById('empty'),
   listHead: document.getElementById('list-head'),
@@ -85,6 +84,9 @@ const state = {
   banner: null,
   /** Files whose slides are being saved as pictures. */
   exporting: new Set(),
+  /** The settings row under the pointer, and the one holding the focus: its explanation shows in the status bar. */
+  hoverHint: null,
+  focusHint: null,
 };
 let uploadSeq = 0;
 
@@ -205,22 +207,12 @@ function renderSettings() {
   el.clarity.value = String(state.clarity);
   el.clarity.style.setProperty('--fill', `${((state.clarity - 1) / 99) * 100}%`);
   el.clarityValue.textContent = String(state.clarity);
-  const s = state.claritySettings[state.clarity];
-  el.clarityDetail.textContent = s
-    ? t(s.pngQuality > 0 ? 'gui.settings.palette' : 'gui.settings.lossless', {
-        ppi: s.ppi,
-        jpeg: s.jpegQuality,
-        png: s.pngQuality,
-        label: { t: clarityLabelKey(state.clarity) },
-      })
-    : '';
   for (const button of el.presets) {
     button.setAttribute('aria-pressed', String(Number(button.dataset.clarity) === state.clarity));
   }
 
   el.place.hidden = !state.nativeFiles;
-  el.placeBeside.checked = besideOn();
-  el.placeFolder.checked = !besideOn();
+  el.place.value = besideOn() ? 'beside' : 'folder';
   el.pathRow.hidden = besideOn();
   if (document.activeElement !== el.outDir) el.outDir.value = state.outDir;
 
@@ -229,12 +221,40 @@ function renderSettings() {
 
   const { images } = state;
   el.imageWidth.value = images.custom ? 'custom' : String(images.width);
-  el.imageWidthCustom.hidden = !images.custom;
+  el.imageWidthCustomWrap.hidden = !images.custom;
   if (document.activeElement !== el.imageWidthCustom) el.imageWidthCustom.value = String(images.width);
   el.imageFormat.value = images.format;
-  for (const radio of el.pages) radio.checked = radio.value === images.pages;
-  el.pagesList.disabled = images.pages !== 'some';
+  el.imagePages.value = images.pages;
+  el.pagesList.hidden = images.pages !== 'some';
   if (document.activeElement !== el.pagesList) el.pagesList.value = images.list;
+}
+
+/** What the clarity setting does to images, in words. */
+function clarityDetail() {
+  const s = state.claritySettings[state.clarity];
+  if (!s) return '';
+  return t(s.pngQuality > 0 ? 'gui.settings.palette' : 'gui.settings.lossless', {
+    ppi: s.ppi,
+    jpeg: s.jpegQuality,
+    png: s.pngQuality,
+    label: { t: clarityLabelKey(state.clarity) },
+  });
+}
+
+/** The explanation of a settings row, for the status bar. */
+function hintText(name) {
+  switch (name) {
+    case 'compress':
+      return clarityDetail();
+    case 'sign':
+      return t('gui.sign.hint');
+    case 'images':
+      return t('gui.images.hint');
+    case 'save':
+      return t(besideOn() ? 'gui.saveHintBeside' : 'gui.saveHint');
+    default:
+      return '';
+  }
 }
 
 /** Results go to a ShibaSlim folder next to each file, which only the desktop app knows the place of. */
@@ -342,6 +362,17 @@ function rowFor(id) {
   return el.list.querySelector(`[data-id="${CSS.escape(id)}"]`);
 }
 
+const icon = (body) =>
+  `<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+/** The row buttons, drawn small; their names are in their tooltips. */
+const ICONS = {
+  preview: icon('<rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M8 3v10"/><path d="M8 3h4.5A1.5 1.5 0 0 1 14 4.5v7a1.5 1.5 0 0 1-1.5 1.5H8z" fill="currentColor" stroke="none" opacity=".35"/>'),
+  images: icon('<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="5.75" cy="6.25" r="1.1"/><path d="M2.5 12l3.5-3.5 2.5 2.5 2-2 3 3"/>'),
+  download: icon('<path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10"/>'),
+  reveal: icon('<path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.8l1.5 1.6h4.7A1.5 1.5 0 0 1 14 6.1v5.4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/>'),
+  remove: icon('<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>'),
+};
+
 function createRow(file) {
   const li = document.createElement('li');
   li.className = 'row';
@@ -355,11 +386,11 @@ function createRow(file) {
     </div>
     <div class="saved"></div>
     <div class="row-actions">
-      <button type="button" data-act="preview" data-t="gui.row.preview" data-t-title="gui.row.previewTitle"></button>
-      <button type="button" data-act="images" data-t="gui.row.images" data-t-title="gui.row.imagesTitle"></button>
-      <button type="button" data-act="download" data-t="gui.row.download" data-t-title="gui.row.downloadTitle"></button>
-      <button type="button" data-act="reveal" data-t="gui.row.reveal" data-t-title="gui.row.revealTitle"></button>
-      <button type="button" data-act="remove" data-t-title="gui.row.remove" data-t-aria="gui.row.remove">×</button>
+      <button type="button" class="icon" data-act="preview" data-t-title="gui.row.previewTitle" data-t-aria="gui.row.preview">${ICONS.preview}</button>
+      <button type="button" class="icon" data-act="images" data-t-title="gui.row.imagesTitle" data-t-aria="gui.row.images">${ICONS.images}</button>
+      <button type="button" class="icon" data-act="download" data-t-title="gui.row.downloadTitle" data-t-aria="gui.row.download">${ICONS.download}</button>
+      <button type="button" class="icon" data-act="reveal" data-t-title="gui.row.revealTitle" data-t-aria="gui.row.reveal">${ICONS.reveal}</button>
+      <button type="button" class="icon" data-act="remove" data-t-title="gui.row.remove" data-t-aria="gui.row.remove">${ICONS.remove}</button>
     </div>`;
   I18N.apply(li);
   return li;
@@ -400,33 +431,48 @@ function metaText(file) {
     case 'error':
       return file.error ? errorText(file.error) : t('gui.meta.failed');
     case 'done': {
-      const r = file.result;
       if (isStale(file)) return t('gui.meta.stale', { size });
-      const settings = r.settings || {};
-      let text = '';
+      // The essentials; doneDetail has the rest, for the tooltip.
+      const r = file.result;
+      const parts = [];
       if (r.before !== undefined) {
-        if (!settings.compress) text = t('gui.meta.signedOnly', { size: formatBytes(r.after), author: r.author });
-        else if (!r.changed) text = t('gui.meta.unchanged', { size });
-        else {
-          text = t('gui.meta.done', {
-            before: formatBytes(r.before),
-            after: formatBytes(r.after),
-            optimized: r.optimized,
-            images: r.images,
-            clarity: settings.clarity,
-          });
-          if (r.author) text += t('gui.meta.signed', { author: r.author });
-        }
+        if (!r.settings.compress) parts.push(formatBytes(r.after));
+        else if (!r.changed) parts.push(t('gui.meta.unchanged', { size }));
+        else parts.push(`${formatBytes(r.before)} → ${formatBytes(r.after)}`);
+        if (r.author) parts.push(t('gui.meta.short.signed'));
       }
-      if (r.pictures) {
-        const params = { size, n: r.pictures.count, renderer: { t: `gui.renderer.${r.pictures.renderer}` } };
-        text = text ? text + t('gui.meta.pictures', params) : t('gui.meta.picturesOnly', params);
-      }
-      return text || t('gui.meta.waiting', { size });
+      if (r.pictures) parts.push(t('gui.meta.short.pictures', { n: r.pictures.count }));
+      return parts.join(' · ') || t('gui.meta.waiting', { size });
     }
     default:
       return t('gui.meta.waiting', { size }) + signatureText(file);
   }
+}
+
+/** Everything about a finished file's result, for the tooltip on its status line. */
+function doneDetail(file) {
+  const r = file.result;
+  const size = formatBytes(file.size);
+  const lines = [];
+  if (r.before !== undefined) {
+    if (!r.settings.compress) lines.push(t('gui.meta.signedOnly', { size: formatBytes(r.after), author: r.author }));
+    else if (!r.changed) lines.push(t('gui.meta.unchanged', { size }));
+    else {
+      const done = t('gui.meta.done', {
+        before: formatBytes(r.before),
+        after: formatBytes(r.after),
+        optimized: r.optimized,
+        images: r.images,
+        clarity: r.settings.clarity,
+      });
+      lines.push(r.author ? done + t('gui.meta.signed', { author: r.author }) : done);
+    }
+  }
+  if (r.pictures) {
+    lines.push(t('gui.meta.picturesDetail', { n: r.pictures.count, renderer: { t: `gui.renderer.${r.pictures.renderer}` } }));
+  }
+  for (const saved of [file.output, file.slidesDir]) if (saved) lines.push(t('gui.savedTo', { path: saved }));
+  return lines.join('\n');
 }
 
 /** Puts the preview picture the file carries in place of the PPT badge, once it has loaded. */
@@ -456,7 +502,9 @@ function renderRow(file) {
   name.title = saved ? t('gui.savedTo', { path: saved }) : file.rel || file.name;
   const meta = li.querySelector('.meta');
   meta.textContent = metaText(file);
-  meta.title = file.state === 'waiting' || file.state === 'queued' ? signatureTitle(file) : '';
+  if (file.state === 'done' && file.result && !isStale(file)) meta.title = doneDetail(file);
+  else if (file.state === 'error') meta.title = meta.textContent;
+  else meta.title = file.state === 'waiting' || file.state === 'queued' ? signatureTitle(file) : '';
   const progress = file.state === 'running' || file.state === 'uploading' ? file.progress : 0;
   li.querySelector('.bar > span').style.width = `${Math.round(progress * 100)}%`;
   // An attributed result can come out a little larger when its images had nothing left to give.
@@ -470,8 +518,8 @@ function renderRow(file) {
   const images = li.querySelector('[data-act="images"]');
   const exporting = state.exporting.has(file.id);
   images.disabled = file.state === 'uploading' || exporting;
-  images.dataset.t = exporting ? 'gui.row.imagesBusy' : 'gui.row.images';
-  images.textContent = t(images.dataset.t);
+  images.classList.toggle('busy', exporting);
+  images.title = t(exporting ? 'gui.row.imagesBusy' : 'gui.row.imagesTitle');
   li.querySelector('[data-act="remove"]').disabled = busy || state.exporting.has(file.id);
 }
 
@@ -504,7 +552,11 @@ function renderSummary() {
     html = I18N.rich('gui.summary.files', { n: files.length, size: formatBytes(files.reduce((s, f) => s + f.size, 0)) });
   }
   if (uploading > 0) html += I18N.rich('gui.summary.uploading', { n: uploading });
-  el.summary.innerHTML = html;
+  // While the pointer is on a setting, or one has the focus, the status bar explains it instead.
+  const hint = hintText(state.hoverHint || state.focusHint);
+  el.summary.classList.toggle('is-hint', Boolean(hint));
+  if (hint) el.summary.textContent = hint;
+  else el.summary.innerHTML = html;
 
   const settings = currentSettings();
   const anyTask = settings.compress || Boolean(settings.attribution) || Boolean(settings.images);
@@ -513,10 +565,9 @@ function renderSummary() {
   el.start.disabled = !active && (!anyTask || !files.some(needsWork));
   el.clear.disabled = files.length === 0 || files.every((f) => f.state === 'running' || f.state === 'uploading');
   // Settings stay as they are while files are being worked on.
-  const controls = [el.clarity, ...el.presets, el.taskCompress, el.taskSign, el.taskImages, el.placeBeside, el.placeFolder];
-  controls.push(el.signAuthor, el.signCompany, el.imageWidth, el.imageWidthCustom, el.imageFormat, ...el.pages);
+  const controls = [el.clarity, ...el.presets, el.taskCompress, el.taskSign, el.taskImages, el.place];
+  controls.push(el.signAuthor, el.signCompany, el.imageWidth, el.imageWidthCustom, el.imageFormat, el.imagePages, el.pagesList);
   for (const control of controls) control.disabled = active;
-  el.pagesList.disabled = active || state.images.pages !== 'some';
 }
 
 function renderAll() {
@@ -824,9 +875,7 @@ el.taskSign.addEventListener('change', () => {
 el.taskImages.addEventListener('change', () => setTasks({ images: el.taskImages.checked }));
 el.signAuthor.addEventListener('input', () => setSign({ author: el.signAuthor.value }));
 el.signCompany.addEventListener('input', () => setSign({ company: el.signCompany.value }));
-for (const radio of [el.placeBeside, el.placeFolder]) {
-  radio.addEventListener('change', () => changeSettings(() => (state.place = radio.value)));
-}
+el.place.addEventListener('change', () => changeSettings(() => (state.place = el.place.value === 'folder' ? 'folder' : 'beside')));
 el.imageWidth.addEventListener('change', () => {
   if (el.imageWidth.value === 'custom') {
     setImages({ custom: true });
@@ -838,12 +887,32 @@ el.imageWidth.addEventListener('change', () => {
 });
 el.imageWidthCustom.addEventListener('input', () => setImages({ width: Math.round(Number(el.imageWidthCustom.value)) || 0 }));
 el.imageFormat.addEventListener('change', () => setImages({ format: el.imageFormat.value === 'jpg' ? 'jpg' : 'png' }));
-for (const radio of el.pages) {
-  radio.addEventListener('change', () => {
-    setImages({ pages: radio.value });
-    if (radio.value === 'some') el.pagesList.focus();
-  });
+el.imagePages.addEventListener('change', () => {
+  setImages({ pages: el.imagePages.value });
+  if (el.imagePages.value === 'some') el.pagesList.focus();
+});
+
+// The status bar explains the settings row under the pointer, or the one being edited.
+function setHint(change) {
+  const before = state.hoverHint || state.focusHint;
+  Object.assign(state, change);
+  if ((state.hoverHint || state.focusHint) !== before) renderSummary();
 }
+const hintOf = (target) => (target instanceof Element ? target.closest('[data-hint]')?.dataset.hint ?? null : null);
+el.settings.addEventListener('pointerover', (event) => setHint({ hoverHint: hintOf(event.target) }));
+el.settings.addEventListener('pointerleave', () => setHint({ hoverHint: null }));
+// Only focus that shows (typing, or moving with the keyboard): a clicked checkbox keeps the focus long after.
+const shownFocus = (target) => {
+  try {
+    return target.matches(':focus-visible');
+  } catch {
+    return target.matches('input[type="text"], input[type="number"]');
+  }
+};
+el.settings.addEventListener('focusin', (event) => setHint({ focusHint: shownFocus(event.target) ? hintOf(event.target) : null }));
+el.settings.addEventListener('focusout', (event) => {
+  if (!el.settings.contains(event.relatedTarget)) setHint({ focusHint: null });
+});
 el.pagesList.addEventListener('input', () => setImages({ list: el.pagesList.value }));
 
 el.pickDir.addEventListener('click', async () => {

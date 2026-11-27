@@ -88,11 +88,13 @@ Then open the interface either way:
 The ShibaSlim page opens in your browser:
 
 1. Drag PowerPoint files or whole folders onto the page, or use **Choose files** / **Choose folder**. Folders are added with all their sub-folders.
-2. Under **What to do**, tick any combination of **Compress images**, **Add attribution** and **Save slides as pictures**: pictures alone, say, or compressing and attributing together.
+2. Tick any combination of **Compress images**, **Add attribution** and **Save slides as pictures**: pictures alone, say, or compressing and attributing together. Each one's settings sit beside it, and fold away while it is unticked.
 3. When compressing, move the **Clarity** slider, or pick **Small**, **Everyday** or **High**. To check the result first, click **Compare** next to a file; this is only a trial run and saves nothing.
 4. Click **Start**. When a file is done, use **Download**, or **Show** to find it in its folder.
 
 Attribution needs an author (the company is optional); see [Attribution](#attribution-optional). For pictures you can set the width (1280, 1920, 2560, 3840 or any number of pixels), the format (PNG or JPG) and which slides (all, the cover only, or numbers such as `1-3, 5`); see [Slides as pictures](#slides-as-pictures). To save one file's pictures right away, click **Pictures** next to it.
+
+Point at a setting and the status bar at the bottom explains it, such as the PPI and JPEG quality the clarity stands for. The buttons beside each file (Compare, Pictures, Show, Download, Remove) are small icons whose names show when you point at them; the line under a file gives the gist of its result, and pointing at it shows every detail and where it was saved.
 
 After a setting changes, finished files show "Settings changed, ready to run again", and **Start** redoes them with the new settings.
 
