@@ -100,6 +100,8 @@
       <div class="opt-controls">
         <select id="place" aria-labelledby="save-label" hidden>
           <option value="beside" data-t="gui.place.beside"></option>
+          <option value="same" data-t="gui.place.same"></option>
+          <option value="replace" data-t="gui.place.replace"></option>
           <option value="folder" data-t="gui.place.folder"></option>
         </select>
         <div class="path-row" id="path-row">
@@ -144,5 +146,15 @@
 <input type="file" id="folder-input" webkitdirectory multiple hidden>
 <div class="overlay" id="overlay" hidden><div data-t="gui.dropOverlay"></div></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
+<!-- Asked every time results are about to be written over the original files. -->
+<dialog class="confirm" id="confirm-replace" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+  <h2 id="confirm-title" data-t="gui.replace.title"></h2>
+  <p id="confirm-body"></p>
+  <ul id="confirm-list"></ul>
+  <div class="actions">
+    <button type="button" data-answer="cancel" data-t="gui.cancel" autofocus></button>
+    <button type="button" data-answer="replace" class="danger" data-t="gui.replace.confirm"></button>
+  </div>
+</dialog>
 </body>
 </html>

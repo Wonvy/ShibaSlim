@@ -51,6 +51,9 @@ const el = {
   folderInput: document.getElementById('folder-input'),
   overlay: document.getElementById('overlay'),
   toast: document.getElementById('toast'),
+  confirmReplace: document.getElementById('confirm-replace'),
+  confirmBody: document.getElementById('confirm-body'),
+  confirmList: document.getElementById('confirm-list'),
 };
 
 const state = {
@@ -61,7 +64,11 @@ const state = {
   /** What Start does to each file; any combination of the three. */
   tasks: { compress: true, sign: false, images: false },
   clarity: 60,
-  /** 'beside': a ShibaSlim folder next to each file (desktop app only); 'folder': outDir. */
+  /**
+   * Where results go (Place in src/gui.ts): 'beside' a ShibaSlim folder next to each file, the 'same'
+   * folder as it, 'replace' the file itself, or the chosen 'folder'. Only the desktop app knows where
+   * files are, so elsewhere it is always the folder.
+   */
   place: 'beside',
   outDir: '',
   /** Attribution: author and company written into results, which are then signed. */
@@ -212,8 +219,8 @@ function renderSettings() {
   }
 
   el.place.hidden = !state.nativeFiles;
-  el.place.value = besideOn() ? 'beside' : 'folder';
-  el.pathRow.hidden = besideOn();
+  el.place.value = placeNow();
+  el.pathRow.hidden = placeNow() !== 'folder';
   if (document.activeElement !== el.outDir) el.outDir.value = state.outDir;
 
   if (document.activeElement !== el.signAuthor) el.signAuthor.value = state.sign.author;
@@ -251,14 +258,16 @@ function hintText(name) {
     case 'images':
       return t('gui.images.hint');
     case 'save':
-      return t(besideOn() ? 'gui.saveHintBeside' : 'gui.saveHint');
+      return t(SAVE_HINTS[placeNow()]);
     default:
       return '';
   }
 }
 
-/** Results go to a ShibaSlim folder next to each file, which only the desktop app knows the place of. */
-const besideOn = () => state.nativeFiles && state.place === 'beside';
+const PLACES = ['beside', 'same', 'replace', 'folder'];
+const SAVE_HINTS = { beside: 'gui.saveHintBeside', same: 'gui.saveHintSame', replace: 'gui.saveHintReplace', folder: 'gui.saveHint' };
+/** Where results go now; only the desktop app knows where files are, so anywhere else it is the folder. */
+const placeNow = () => (state.nativeFiles ? state.place : 'folder');
 const imagesOn = () => state.slideImages && state.tasks.images;
 
 /** One line, trimmed: the server tidies names the same way before writing them. */
@@ -284,7 +293,7 @@ function currentSettings() {
     attribution: attribution(),
     images: imagesOn() ? pictureSettings() : null,
     outDir: state.outDir,
-    beside: besideOn(),
+    place: placeNow(),
   };
 }
 
@@ -349,9 +358,9 @@ function isStale(file) {
   const q = now.images;
   if (Boolean(p) !== Boolean(q) || (p && (p.width !== q.width || p.format !== q.format || p.pages !== q.pages))) return true;
   // Files the desktop app added by path can go next to themselves; anything else goes to the folder.
-  const beside = (settings) => Boolean(file.local && settings.beside);
-  if (beside(done) !== beside(now)) return true;
-  return !beside(now) && done.outDir !== now.outDir;
+  const place = (settings) => (file.local ? settings.place : 'folder');
+  if (place(done) !== place(now)) return true;
+  return place(now) === 'folder' && done.outDir !== now.outDir;
 }
 
 function needsWork(file) {
@@ -440,6 +449,7 @@ function metaText(file) {
         else if (!r.changed) parts.push(t('gui.meta.unchanged', { size }));
         else parts.push(`${formatBytes(r.before)} → ${formatBytes(r.after)}`);
         if (r.author) parts.push(t('gui.meta.short.signed'));
+        if (file.local && r.settings.place === 'replace') parts.push(t('gui.meta.short.replaced'));
       }
       if (r.pictures) parts.push(t('gui.meta.short.pictures', { n: r.pictures.count }));
       return parts.join(' · ') || t('gui.meta.waiting', { size });
@@ -819,7 +829,7 @@ async function exportImages(id) {
   rerender();
   toast(t('gui.toast.imagesRunning'));
   try {
-    const result = await api(`/api/images/${id}`, { method: 'POST', body: { outDir: state.outDir, beside: besideOn(), images } });
+    const result = await api(`/api/images/${id}`, { method: 'POST', body: { outDir: state.outDir, place: placeNow(), images } });
     const renderer = { t: `gui.renderer.${result.renderer}` };
     toast(
       result.failed.length > 0
@@ -846,10 +856,43 @@ el.start.addEventListener('click', async () => {
     if (ids.length === 0) return;
     const settings = currentSettings();
     if (!checkSettings(settings)) return;
-    await api('/api/start', { method: 'POST', body: { ids, ...settings } });
+    // Writing over the originals is asked about every time, naming the files.
+    const replacing = settings.place === 'replace' && (settings.compress || settings.attribution);
+    const originals = replacing ? ids.map((id) => state.files.get(id)).filter((f) => f && f.local) : [];
+    if (originals.length > 0 && !(await confirmReplace(originals))) return;
+    await api('/api/start', { method: 'POST', body: { ids, ...settings, confirmed: originals.length > 0 } });
   } catch (err) {
     toast(errorText(err));
   }
+});
+
+const CONFIRM_LIST = 6;
+
+/** Asks before results are written over these files; resolves true only when the user says so. */
+function confirmReplace(files) {
+  const dialog = el.confirmReplace;
+  if (typeof dialog.showModal !== 'function') {
+    return Promise.resolve(confirm(`${t('gui.replace.title')}\n${t('gui.replace.body', { n: files.length })}`));
+  }
+  el.confirmBody.textContent = t('gui.replace.body', { n: files.length });
+  el.confirmList.replaceChildren(
+    ...files.slice(0, CONFIRM_LIST).map((file) => Object.assign(document.createElement('li'), { textContent: file.rel || file.name })),
+  );
+  if (files.length > CONFIRM_LIST) {
+    el.confirmList.append(Object.assign(document.createElement('li'), { className: 'more', textContent: t('gui.replace.more', { n: files.length - CONFIRM_LIST }) }));
+  }
+  return new Promise((resolve) => {
+    dialog.returnValue = 'cancel';
+    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'replace'), { once: true });
+    dialog.showModal();
+  });
+}
+
+el.confirmReplace.addEventListener('click', (event) => {
+  const answer = event.target.closest('[data-answer]')?.dataset.answer;
+  if (answer) el.confirmReplace.close(answer);
+  // A click on the backdrop (outside the box) is a no.
+  else if (event.target === el.confirmReplace) el.confirmReplace.close('cancel');
 });
 
 el.clear.addEventListener('click', async () => {
@@ -875,7 +918,7 @@ el.taskSign.addEventListener('change', () => {
 el.taskImages.addEventListener('change', () => setTasks({ images: el.taskImages.checked }));
 el.signAuthor.addEventListener('input', () => setSign({ author: el.signAuthor.value }));
 el.signCompany.addEventListener('input', () => setSign({ company: el.signCompany.value }));
-el.place.addEventListener('change', () => changeSettings(() => (state.place = el.place.value === 'folder' ? 'folder' : 'beside')));
+el.place.addEventListener('change', () => changeSettings(() => (state.place = PLACES.includes(el.place.value) ? el.place.value : 'beside')));
 el.imageWidth.addEventListener('change', () => {
   if (el.imageWidth.value === 'custom') {
     setImages({ custom: true });
@@ -1027,7 +1070,7 @@ async function init() {
   const saved = loadSettings();
   state.clarity = Math.min(100, Math.max(1, Math.round(Number(saved.clarity) || data.defaultClarity)));
   state.outDir = typeof saved.outDir === 'string' && saved.outDir ? saved.outDir : data.defaultOutDir;
-  state.place = saved.place === 'folder' ? 'folder' : 'beside';
+  state.place = PLACES.includes(saved.place) ? saved.place : 'beside';
   const sign = saved.sign && typeof saved.sign === 'object' ? saved.sign : {};
   state.sign = {
     author: typeof sign.author === 'string' ? sign.author : '',

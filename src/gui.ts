@@ -121,9 +121,20 @@ interface Settings {
   /** Set when saving slides as pictures; `pages` is 'all', 'cover' or a list such as "1-3, 5". */
   images: { width: number; format: ImageFormat; pages: string } | null;
   outDir: string;
-  /** Put results in a ShibaSlim folder next to each file added by path, rather than in `outDir`. */
-  beside: boolean;
+  /** Where results go for files added by path; anything else always goes to `outDir`. */
+  place: Place;
 }
+
+/**
+ * Where results go:
+ * - beside: a ShibaSlim folder next to the original (ShibaSlim/汇报.slim.pptx, ShibaSlim/汇报-slides);
+ * - same: the folder the original is in (汇报.slim.pptx, 汇报-slides);
+ * - replace: the presentation written over the original itself, pictures as with `same`;
+ * - folder: `outDir`, keeping the structure of dropped folders.
+ * All but `folder` need to know where the file is, which only files added by path do.
+ */
+type Place = 'beside' | 'same' | 'replace' | 'folder';
+const PLACES: readonly Place[] = ['beside', 'same', 'replace', 'folder'];
 
 interface Result {
   settings: Settings;
@@ -273,6 +284,9 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     const { settings } = job;
     const place = placeFor(entry, settings);
     const writes = settings.compress || settings.attribution !== null;
+    const replacing = writes && settings.place === 'replace' && entry.origin !== undefined;
+    // The pictures are drawn from the original, which replacing is about to overwrite.
+    const original = replacing && settings.images ? await readFile(entry.source) : null;
     // The share of the progress bar the presentation takes; the pictures get the rest.
     const share = writes ? (settings.images ? 0.5 : 1) : 0;
     let lastSent = 0;
@@ -287,7 +301,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     };
 
     if (writes) {
-      const output = await claimOutput(entry, place, settings.compress ? DEFAULT_SUFFIX : SIGNED_SUFFIX);
+      const output = replacing ? entry.origin! : await claimOutput(entry, place, settings.compress ? DEFAULT_SUFFIX : SIGNED_SUFFIX);
       const attribution = settings.attribution && { ...settings.attribution, signingKey: await loadOrCreateKey(keyFile) };
       if (!settings.compress && attribution) {
         report({ kind: 'sign', done: 0, total: 1 }, 0);
@@ -302,6 +316,12 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         Object.assign(result, compressedSummary(optimized));
       }
       entry.output = output;
+      if (replacing) {
+        // The file in the list is now the result: its size, comparison, picture and signature change with it.
+        entry.size = (await stat(output)).size;
+        for (const key of previews.keys()) if (key.startsWith(`${entry.id}:`)) previews.delete(key);
+        inspecting = inspecting.then(() => inspect(entry));
+      }
     } else {
       delete entry.output;
     }
@@ -309,7 +329,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     if (settings.images) {
       const dir = claimSlidesDir(entry, place);
       report({ kind: 'images', done: 0, total: 0 }, share);
-      const drawn = await renderSlides(entry.source, dir, {
+      const drawn = await renderSlides(original ?? entry.source, dir, {
         width: settings.images.width,
         format: settings.images.format,
         ...(job.pages ? { pages: job.pages } : {}),
@@ -323,11 +343,12 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   }
 
   /**
-   * Where an entry's results go, as the path the file itself would have there: in a ShibaSlim folder
-   * next to the original when asked and its place is known, otherwise mirrored under the save folder.
+   * Where an entry's results go, as the path the file itself would have there (results take their
+   * names from it): see Place. Files whose place is not known go under the save folder.
    */
-  function placeFor(entry: Entry, settings: Pick<Settings, 'outDir' | 'beside'>): string {
-    if (settings.beside && entry.origin) return path.join(path.dirname(entry.origin), RESULTS_FOLDER, path.basename(entry.origin));
+  function placeFor(entry: Entry, settings: Pick<Settings, 'outDir' | 'place'>): string {
+    if (entry.origin && settings.place === 'beside') return path.join(path.dirname(entry.origin), RESULTS_FOLDER, path.basename(entry.origin));
+    if (entry.origin && (settings.place === 'same' || settings.place === 'replace')) return entry.origin;
     const desired = path.join(settings.outDir, ...entry.rel.split('/'));
     if (!isInsideOrEqual(settings.outDir, desired)) throw new HttpError(400, 'error.badPath');
     return desired;
@@ -400,7 +421,15 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
         update(entry);
       }
       const check = await checkSignature(pkg);
-      if (check.status === 'unsigned' || entries.get(entry.id) !== entry) return;
+      if (entries.get(entry.id) !== entry) return;
+      if (check.status === 'unsigned') {
+        // A file replaced by an unsigned result no longer carries the signature it had.
+        if (entry.signature) {
+          delete entry.signature;
+          update(entry);
+        }
+        return;
+      }
       const own = check.fingerprint ? await keyFileFingerprint(keyFile).catch(() => null) : null;
       entry.signature = {
         status: check.status,
@@ -643,7 +672,7 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       const images = parseImages(body.images);
       if (!images) throw new HttpError(400, 'error.badRequest');
       await badRequest(() => chooseRenderers());
-      const dir = claimSlidesDir(entry, placeFor(entry, { outDir: validateDir(body.outDir), beside: body.beside === true }));
+      const dir = claimSlidesDir(entry, placeFor(entry, { outDir: validateDir(body.outDir), place: parsePlace(body.place) }));
       const report = await renderSlides(entry.source, dir, {
         width: images.width,
         format: images.format,
@@ -827,6 +856,11 @@ function parseImages(value: unknown): (NonNullable<Settings['images']> & { list:
   }
 }
 
+/** Where the page asks results to go; the save folder unless it names another place. */
+function parsePlace(value: unknown): Place {
+  return PLACES.includes(value as Place) ? (value as Place) : 'folder';
+}
+
 /** What the page asks to be done (`/api/start`), checked before any file is touched. */
 async function parseSettings(body: Record<string, unknown>): Promise<{ settings: Settings; pages: number[] | null }> {
   const compress = body.compress === true;
@@ -841,13 +875,16 @@ async function parseSettings(body: Record<string, unknown>): Promise<{ settings:
   // Say at once when nothing here can draw slides, rather than on every file.
   if (images) await badRequest(() => chooseRenderers());
   const outDir = validateDir(body.outDir);
+  const place = parsePlace(body.place);
+  // The page asks before anything is written over the originals; never do it without that.
+  if (place === 'replace' && (compress || attribution) && body.confirmed !== true) throw new HttpError(400, 'error.replaceUnconfirmed');
   const settings: Settings = {
     compress,
     clarity,
     attribution,
     images: images && { width: images.width, format: images.format, pages: images.pages },
     outDir,
-    beside: body.beside === true,
+    place,
   };
   return { settings, pages: images?.list ?? null };
 }

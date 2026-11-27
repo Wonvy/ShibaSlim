@@ -421,20 +421,64 @@ describe('gui server', () => {
       const entry = listed.find((f) => f.rel === '汇报.pptx');
       const nested = listed.find((f) => f.rel === '项目/二季度/b.pptx');
       const attribution = { author: '张三' };
-      await call('/api/start', { method: 'POST', body: { ids: [entry.id, nested.id], compress: true, clarity: 60, attribution, outDir, beside: true } });
+      await call('/api/start', { method: 'POST', body: { ids: [entry.id, nested.id], compress: true, clarity: 60, attribution, outDir, place: 'beside' } });
       const done = await waitFor(entry.id);
       assert.equal(done.state, 'done', JSON.stringify(done.error));
       assert.equal(done.output, path.join(home, 'ShibaSlim', '汇报.slim.pptx'));
       assert.equal(done.result.author, '张三');
       assert.equal((await waitFor(nested.id)).output, path.join(folder, '二季度', 'ShibaSlim', 'b.slim.pptx'));
       // Only the next-to-the-file choice puts results there; the save folder is used otherwise.
-      await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 60, outDir, beside: false } });
+      await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 60, outDir, place: 'folder' } });
       assert.equal((await waitFor(entry.id)).output, path.join(outDir, '汇报.slim.pptx'));
 
       // Removing a file added by path leaves the original alone.
       for (const f of listed) await call(`/api/files/${f.id}`, { method: 'DELETE' });
       assert.ok((await readFile(deck)).equals(fixture.data));
       assert.ok(existsSync(path.join(folder, 'a.pptx')));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test('saves results in the same folder, or over the originals once that is confirmed', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
+    try {
+      const deck = path.join(home, '原件.pptx');
+      await writeFile(deck, fixture.data);
+      await call('/api/add', { method: 'POST', body: { paths: [deck] } });
+      const entry = (await call('/api/state')).data.files.find((f) => f.rel === '原件.pptx');
+
+      await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 60, outDir, place: 'same' } });
+      const same = await waitFor(entry.id);
+      assert.equal(same.output, path.join(home, '原件.slim.pptx'));
+      assert.ok((await readFile(deck)).equals(fixture.data), 'the original stays');
+
+      // Never written over without the page saying the user agreed.
+      const body = { ids: [entry.id], compress: true, clarity: 60, attribution: { author: '王五' }, outDir, place: 'replace' };
+      const unconfirmed = await call('/api/start', { method: 'POST', body });
+      assert.equal(unconfirmed.status, 400);
+      assert.equal(unconfirmed.data.code, 'error.replaceUnconfirmed');
+      assert.ok((await readFile(deck)).equals(fixture.data));
+
+      await call('/api/start', { method: 'POST', body: { ...body, confirmed: true } });
+      const replaced = await waitFor(entry.id);
+      assert.equal(replaced.state, 'done', JSON.stringify(replaced.error));
+      assert.equal(replaced.output, deck);
+      const written = await readFile(deck);
+      assert.ok(written.length < fixture.data.length * 0.3, 'the original now holds the compressed result');
+      assert.equal(replaced.size, written.length, 'the list shows the file as it is now');
+      assert.equal((await checkSignatureOf(written)).author, '王五');
+      assert.deepEqual(readdirSync(home).sort(), ['原件.pptx', '原件.slim.pptx'], 'nothing else is left next to it');
+
+      // Pictures alone write nothing over the original, so they need no confirming.
+      if (process.platform === 'darwin') {
+        const pictures = await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: false, images: { width: 320, format: 'png', pages: 'cover' }, outDir, place: 'replace' } });
+        assert.equal(pictures.status, 200, JSON.stringify(pictures.data));
+        assert.equal((await waitFor(entry.id)).slidesDir, path.join(home, '原件-slides'));
+        assert.ok((await readFile(deck)).equals(written));
+      }
+      await call(`/api/files/${entry.id}`, { method: 'DELETE' });
+      assert.ok(existsSync(deck));
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -448,7 +492,7 @@ describe('gui server', () => {
       await call('/api/add', { method: 'POST', body: { paths: [deck] } });
       const entry = (await call('/api/state')).data.files.find((f) => f.rel === '全部.pptx');
       const images = { width: 320, format: 'jpg', pages: '2, 4-5, 99' };
-      const queued = await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 40, attribution: { author: '李四' }, images, outDir, beside: true } });
+      const queued = await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: true, clarity: 40, attribution: { author: '李四' }, images, outDir, place: 'beside' } });
       if (process.platform === 'linux' || (process.platform === 'win32' && queued.data.code === 'error.noRendererWindows')) {
         assert.equal(queued.status, 400);
         return;
@@ -468,7 +512,7 @@ describe('gui server', () => {
       assert.equal((await sharp(path.join(done.slidesDir, '02.jpg')).metadata()).width, 320);
 
       // Pictures alone: no presentation is written, and the cover replaces the earlier pictures.
-      await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: false, images: { ...images, pages: 'cover' }, outDir, beside: true } });
+      await call('/api/start', { method: 'POST', body: { ids: [entry.id], compress: false, images: { ...images, pages: 'cover' }, outDir, place: 'beside' } });
       const cover = await waitFor(entry.id);
       assert.equal(cover.state, 'done', JSON.stringify(cover.error));
       assert.equal(cover.output, undefined);

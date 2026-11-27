@@ -116,7 +116,16 @@ project/
         └── 02.png
 ```
 
-Under **Save to** you can switch to **This folder** to put every result in one folder instead; dropped folders then keep their structure. The browser version (`shibaslim gui`) cannot learn where a file came from, so it always saves to a folder, `Downloads/ShibaSlim` by default.
+**Save to** offers these choices:
+
+| Choice | Where results go |
+|---|---|
+| A ShibaSlim folder next to each file (default) | As above |
+| The folder each file is in | Next to the original: `report.slim.pptx`, `report-slides/` |
+| Replace the original files | Compressed and attributed results are written over the originals, keeping their names; pictures go in `report-slides/` next to them. **Every time you click Start, a dialog lists the files to be overwritten and asks first**; it cannot be undone. Saving only pictures changes no original and asks nothing |
+| This folder | Every result in the chosen folder; dropped folders keep their structure |
+
+The browser version (`shibaslim gui`) cannot learn where a file came from, so it always saves to a folder, `Downloads/ShibaSlim` by default.
 
 Compressed results get `.slim` added to their names (`report.pptx` → `report.slim.pptx`) and attributed-only ones `.signed`, so they cannot be mixed up with the originals. If a file of that name is already there, the result is saved as `report.slim (2).pptx`; existing files are never overwritten.
 
