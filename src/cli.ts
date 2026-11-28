@@ -14,7 +14,7 @@ import {
 } from './attribution.js';
 import { describeSettings, formatBytes, percentSaved } from './format.js';
 import { defaultOutDir, openWithSystem, startGui } from './gui.js';
-import { DEFAULT_SUFFIX, ENGLISH_SUFFIX, SIGNED_SUFFIX, collectInputs, outputPathFor, previewPathFor, type OutputPlan } from './inputs.js';
+import { DEFAULT_SUFFIX, ENGLISH_SUFFIX, SIGNED_SUFFIX, collectInputs, distinctPaths, outputPathsFor, previewPathFor, type OutputPlan } from './inputs.js';
 import type { NamesResult } from './names.js';
 import { SlimError } from './opc.js';
 import {
@@ -345,9 +345,10 @@ async function runEdit(argv: string[], command: 'sign' | 'names'): Promise<numbe
   }
   if (human && attribution) console.log(dim(attributionLine(attribution)));
 
-  const results = await mapPool(items, jobs, async (item): Promise<EditResult> => {
+  const outputs = outputPathsFor(items, plan);
+  const results = await mapPool(items, jobs, async (item, i): Promise<EditResult> => {
     const label = path.relative(process.cwd(), item.file) || item.file;
-    const output = outputPathFor(item, plan);
+    const output = outputs[i]!;
     try {
       if (!plan.inPlace && path.resolve(output) === item.file) throw new SlimError('error.samePath');
       const report = await editFile(item.file, output, options);
@@ -525,9 +526,14 @@ async function runImages(argv: string[]): Promise<number> {
 
   const showStatus = human && useColor;
   const results: ImagesResult[] = [];
-  for (const item of items) {
+  // Two files of the same name (from different folders, or 汇报.pptx and 汇报.pptm) get a folder each.
+  const dirs = distinctPaths(
+    items.map((item) => slidesDirFor(item.file, item.rel, outDir)),
+    'dir',
+  );
+  for (const [i, item] of items.entries()) {
     const label = path.relative(process.cwd(), item.file) || item.file;
-    const dir = slidesDirFor(item.file, item.rel, outDir);
+    const dir = dirs[i]!;
     const status = (text: string) => {
       if (showStatus) process.stdout.write(`\r\x1b[K${text}`);
     };
@@ -712,9 +718,10 @@ async function main(): Promise<number> {
   }
 
   const showStatus = human && useColor && jobs === 1;
-  const results = await mapPool(items, jobs, async (item): Promise<Result> => {
+  const outputs = outputPathsFor(items, plan);
+  const results = await mapPool(items, jobs, async (item, i): Promise<Result> => {
     const label = path.relative(process.cwd(), item.file) || item.file;
-    const output = outputPathFor(item, plan);
+    const output = outputs[i]!;
     const previewPath = preview ? previewPathFor(output) : undefined;
     if (showStatus) process.stdout.write(dim(`… ${label}`));
     const clearStatus = () => {

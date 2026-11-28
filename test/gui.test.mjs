@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -428,9 +428,13 @@ describe('gui server', () => {
       const deck = path.join(home, '汇报.pptx');
       await writeFile(deck, fixture.data);
       // A folder with a sub-folder, plus things that are not to be added: an earlier result, a lock file,
-      // a hidden file and ShibaSlim's own folder.
+      // a hidden file, a hidden folder, ShibaSlim's own folder, and a link back up that would list
+      // everything again.
       const folder = path.join(home, '项目');
       await mkdir(path.join(folder, '二季度', 'ShibaSlim'), { recursive: true });
+      await mkdir(path.join(folder, '.backup'));
+      await writeFile(path.join(folder, '.backup', 'old.pptx'), fixture.data);
+      await symlink(folder, path.join(folder, '二季度', '回到项目'), 'junction');
       await writeFile(path.join(folder, '二季度', 'b.pptx'), fixture.data);
       await writeFile(path.join(folder, 'a.pptx'), fixture.data);
       await writeFile(path.join(folder, 'a.slim.pptx'), fixture.data);
@@ -462,6 +466,36 @@ describe('gui server', () => {
       for (const f of listed) await call(`/api/files/${f.id}`, { method: 'DELETE' });
       assert.ok((await readFile(deck)).equals(fixture.data));
       assert.ok(existsSync(path.join(folder, 'a.pptx')));
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test('gives files of the same name gathered in one folder a result each', async () => {
+    const home = await mkdtemp(path.join(tmpdir(), 'shibaslim-gui-'));
+    try {
+      // Three files called 汇报 from different folders (one with its extension in capitals), all saved
+      // to one folder: none may be written over another, also where names differ only in case.
+      const sources = ['一组', '二组', '三组'].map((group, i) => path.join(home, group, i === 2 ? '汇报.PPTX' : '汇报.pptx'));
+      for (const file of sources) {
+        await mkdir(path.dirname(file));
+        await writeFile(file, fixture.data);
+      }
+      const gathered = path.join(home, '汇总');
+      const before = new Set((await call('/api/state')).data.files.map((f) => f.id));
+      assert.deepEqual((await call('/api/add', { method: 'POST', body: { paths: sources } })).data, { added: 3, skipped: 0, duplicate: 0 });
+      // Added in the order given.
+      const ids = (await call('/api/state')).data.files.filter((f) => !before.has(f.id)).map((f) => f.id);
+      await call('/api/start', { method: 'POST', body: { ids, compress: true, clarity: 60, outDir: gathered, place: 'folder' } });
+      const outputs = [];
+      for (const id of ids) {
+        const done = await waitFor(id);
+        assert.equal(done.state, 'done', JSON.stringify(done.error));
+        outputs.push(done.output);
+      }
+      assert.deepEqual(outputs, ['汇报.slim.pptx', '汇报.slim (2).pptx', '汇报.slim (3).PPTX'].map((name) => path.join(gathered, name)));
+      assert.equal(readdirSync(gathered).length, 3);
+      for (const id of ids) await call(`/api/files/${id}`, { method: 'DELETE' });
     } finally {
       await rm(home, { recursive: true, force: true });
     }

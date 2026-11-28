@@ -292,6 +292,19 @@ describe('saving slides as pictures', () => {
     assert.deepEqual(await readdir(result.output), ['02.png']);
   });
 
+  test('command line: gives two files of the same name a folder each', { skip: !mac }, async () => {
+    const folder = path.join(dir, 'cli-same-name');
+    await mkdir(folder);
+    await writeFile(path.join(folder, '汇报.pptm'), colorDeck);
+    await writeFile(path.join(folder, '汇报.pptx'), colorDeck);
+    const { stdout } = await run(process.execPath, [CLI, 'images', folder, '-w', '320', '-p', '1', '--json']);
+    assert.deepEqual(
+      JSON.parse(stdout).map((r) => r.output),
+      [path.join(folder, '汇报-slides'), path.join(folder, '汇报-slides (2)')],
+    );
+    for (const sub of ['汇报-slides', '汇报-slides (2)']) assert.deepEqual(await readdir(path.join(folder, sub)), ['01.png']);
+  });
+
   test('command line: refuses bad settings before reading any file', async () => {
     const bad = async (args, pattern) => {
       const err = await run(process.execPath, [CLI, 'images', 'missing.pptx', ...args]).then(

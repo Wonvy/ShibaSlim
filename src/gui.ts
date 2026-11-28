@@ -11,7 +11,7 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { checkSignature, defaultKeyPath, keyFileFingerprint, loadOrCreateKey, resolveAttribution, type SignatureStatus } from './attribution.js';
 import { DEFAULT_CLARITY, settingsForClarity } from './clarity.js';
-import { collectInputs, DEFAULT_SUFFIX, ENGLISH_SUFFIX, EXT_RE, SIGNED_SUFFIX, type InputItem } from './inputs.js';
+import { collectInputs, DEFAULT_SUFFIX, ENGLISH_SUFFIX, EXT_RE, samePlaceKey, SIGNED_SUFFIX, type InputItem } from './inputs.js';
 import { t, runtimeScript, type Locale, type MessageKey, type Params } from './messages.js';
 import { OpcPackage, SlimError } from './opc.js';
 import type { NamesResult } from './names.js';
@@ -215,7 +215,10 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   const entries = new Map<string, Entry>();
   const clients = new Set<ServerResponse>();
   const queue: Job[] = [];
-  /** Output paths this session wrote, so a re-run may overwrite its own file but never anyone else's. */
+  /**
+   * Output paths this session wrote (by samePlaceKey) and the entry each is for, so a re-run may
+   * overwrite its own file but never anyone else's, nor two files of the same name each other's.
+   */
   const written = new Map<string, string>();
   const previews = new Map<string, Promise<string>>();
   const thumbs = new Map<string, { type: string; data: Buffer }>();
@@ -372,12 +375,12 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     const base = name.endsWith(suffix) ? name : name + suffix;
     for (let i = 1; ; i++) {
       const candidate = path.join(dir, i === 1 ? `${base}${ext}` : `${base} (${i})${ext}`);
-      const owner = written.get(candidate);
+      const owner = written.get(samePlaceKey(candidate));
       if (owner === entry.id || (!owner && !existsSync(candidate))) {
-        if (entry.output && entry.output !== candidate && written.get(entry.output) === entry.id) {
-          written.delete(entry.output);
+        if (entry.output && entry.output !== candidate && written.get(samePlaceKey(entry.output)) === entry.id) {
+          written.delete(samePlaceKey(entry.output));
         }
-        written.set(candidate, entry.id);
+        written.set(samePlaceKey(candidate), entry.id);
         await mkdir(dir, { recursive: true });
         return candidate;
       }
@@ -392,9 +395,9 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
     const { dir, name } = path.parse(desired);
     for (let i = 1; ; i++) {
       const candidate = path.join(dir, i === 1 ? `${name}${SLIDES_SUFFIX}` : `${name}${SLIDES_SUFFIX} (${i})`);
-      const owner = written.get(candidate);
+      const owner = written.get(samePlaceKey(candidate));
       if (owner === entry.id || (!owner && !existsSync(candidate))) {
-        written.set(candidate, entry.id);
+        written.set(samePlaceKey(candidate), entry.id);
         return candidate;
       }
     }

@@ -312,6 +312,17 @@ input[type="range"]:disabled { cursor: default; opacity: 0.5; }
 .info { min-width: 0; }
 .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Where the result was saved; app.js leaves out the middle of a long path, the ellipsis is a fallback. */
+.dest { display: flex; gap: 5px; align-items: baseline; min-width: 0; color: var(--muted); font-size: 12px; }
+.dest .arrow { flex: none; }
+.dest .path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 .row[data-state="error"] .meta { color: var(--bad); white-space: normal; }
 
 .bar { height: 4px; margin-top: 6px; border-radius: 2px; background: var(--soft); overflow: hidden; }

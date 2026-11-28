@@ -10,6 +10,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { optimizeImage } from '../dist/images.js';
 import { PRESETS, SlimError, buildPreview, optimizeBuffer, settingsForClarity } from '../dist/index.js';
+import { distinctPaths } from '../dist/inputs.js';
 import { resolveSettings } from '../dist/optimize.js';
 import { buildFixture } from './fixture.mjs';
 
@@ -322,6 +323,20 @@ describe('optimizeImage', () => {
   });
 });
 
+describe('distinctPaths', () => {
+  test('numbers results that would land on one another, never onto another result', () => {
+    const out = path.resolve('out');
+    const at = (...names) => names.map((name) => path.join(out, name));
+    assert.deepEqual(distinctPaths(at('汇报.slim.pptx', '汇报.slim.pptx', 'a.pptx')), at('汇报.slim.pptx', '汇报.slim (2).pptx', 'a.pptx'));
+    // A name a later file has by itself is kept for it.
+    assert.deepEqual(distinctPaths(at('汇报.pptx', '汇报.pptx', '汇报 (2).pptx')), at('汇报.pptx', '汇报 (3).pptx', '汇报 (2).pptx'));
+    // Names that differ only in case, or in how an accent is encoded, are one file on macOS and Windows.
+    assert.deepEqual(distinctPaths(at('Report.pptx', 'report.PPTX', 'caf\u00e9.pptx', 'cafe\u0301.pptx')), at('Report.pptx', 'report (2).PPTX', 'caf\u00e9.pptx', 'cafe\u0301 (2).pptx'));
+    // Folders take the number at the end, whatever dots are in their names.
+    assert.deepEqual(distinctPaths(at('v1.2-slides', 'v1.2-slides'), 'dir'), at('v1.2-slides', 'v1.2-slides (2)'));
+  });
+});
+
 describe('cli', () => {
   let dir;
   let fixture;
@@ -354,6 +369,22 @@ describe('cli', () => {
     const out = path.join(dir, 'out');
     await run(process.execPath, [CLI, path.join(dir, 'in', 'a.pptx'), path.join(dir, 'in', 'sub'), '-o', out]);
     assert.deepEqual((await readdir(out)).sort(), ['a.pptx', '中文 名称.pptx']);
+  });
+
+  test('gives files of the same name from different folders a result each under --out-dir', async () => {
+    const groups = path.join(dir, 'groups');
+    const sources = [path.join(groups, '一组', '汇报.pptx'), path.join(groups, '二组', '汇报.pptx'), path.join(groups, '三组', '汇报.PPTX')];
+    for (const file of sources) {
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, fixture.data);
+    }
+    const out = path.join(dir, 'gathered');
+    const { stdout } = await run(process.execPath, [CLI, ...sources, '-o', out, '-j', '3', '--json']);
+    assert.deepEqual(
+      JSON.parse(stdout).map((r) => r.output),
+      ['汇报.pptx', '汇报 (2).pptx', '汇报 (3).PPTX'].map((name) => path.join(out, name)),
+    );
+    assert.equal((await readdir(out)).length, 3);
   });
 
   test('--dry-run writes nothing', async () => {

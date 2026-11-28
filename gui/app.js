@@ -396,6 +396,7 @@ function createRow(file) {
     <div class="badge"><span>PPT</span></div>
     <div class="info">
       <div class="name"></div>
+      <div class="dest" hidden><span class="arrow" aria-hidden="true">→</span><span class="path"></span></div>
       <div class="meta"></div>
       <div class="bar"><span></span></div>
     </div>
@@ -496,6 +497,86 @@ function doneDetail(file) {
   return lines.join('\n');
 }
 
+// ---------- where results went ----------
+
+/**
+ * Shows under the file's name where its result was saved: the presentation, or the folder of slide
+ * pictures when only those were made. The tooltip has every place it saved to.
+ */
+function showDestination(li, file) {
+  const dest = li.querySelector('.dest');
+  const saved = file.output || file.slidesDir || '';
+  dest.hidden = !saved;
+  const node = dest.querySelector('.path');
+  dest.title = [file.output, file.slidesDir]
+    .filter(Boolean)
+    .map((p) => t('gui.savedTo', { path: p }))
+    .join('\n');
+  if (node.dataset.full === saved) return;
+  node.dataset.full = saved;
+  node.textContent = saved;
+  if (saved) fitLater(node);
+}
+
+/**
+ * Shortens a path to `width` pixels by leaving out its middle, keeping more of its end, where the
+ * file's name and nearest folders are: /Users/me/…/二季度/ShibaSlim/汇报.slim.pptx.
+ */
+function middleEllipsis(full, width, measure) {
+  if (measure(full) <= width) return full;
+  const chars = Array.from(full);
+  const nameLength = Array.from(full.split(/[\\/]/).pop()).length;
+  const cut = (n) => {
+    const tail = Math.min(n, Math.max(Math.ceil(n * 0.65), nameLength + 1));
+    return `${chars.slice(0, n - tail).join('')}…${chars.slice(chars.length - tail).join('')}`;
+  };
+  // The most characters that still fit.
+  let lo = 0;
+  let hi = chars.length - 1;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if (measure(cut(mid)) <= width) lo = mid;
+    else hi = mid - 1;
+  }
+  return cut(lo);
+}
+
+let measureCtx;
+function textWidth(text, font) {
+  measureCtx ??= document.createElement('canvas').getContext('2d');
+  measureCtx.font = font;
+  return measureCtx.measureText(text).width;
+}
+
+const unfitted = new Set();
+let fitFrame = 0;
+/** Fits paths together in the next frame: all widths are read first, so the page is laid out once. */
+function fitLater(node) {
+  unfitted.add(node);
+  fitFrame ||= requestAnimationFrame(() => {
+    fitFrame = 0;
+    const nodes = [...unfitted].filter((n) => n.isConnected && n.dataset.full);
+    unfitted.clear();
+    const sized = nodes.map((n) => {
+      const style = getComputedStyle(n);
+      return { n, width: n.clientWidth, font: `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` };
+    });
+    for (const { n, width, font } of sized) {
+      // Not laid out (a hidden list): it is fitted when it gets a size.
+      if (width > 0) n.textContent = middleEllipsis(n.dataset.full, width - 1, (text) => textWidth(text, font));
+    }
+  });
+}
+
+// The list's width changes with the window; fit every path again.
+let listWidth = 0;
+new ResizeObserver(([entry]) => {
+  const width = Math.round(entry.contentRect.width);
+  if (width === listWidth) return;
+  listWidth = width;
+  for (const node of el.list.querySelectorAll('.dest .path')) if (node.dataset.full) fitLater(node);
+}).observe(el.list);
+
 /** Puts the preview picture the file carries in place of the PPT badge, once it has loaded. */
 function showThumb(li, id) {
   const badge = li.querySelector('.badge');
@@ -519,8 +600,8 @@ function renderRow(file) {
   if (file.thumb) showThumb(li, file.id);
   const name = li.querySelector('.name');
   name.textContent = file.rel || file.name;
-  const saved = file.output || file.slidesDir;
-  name.title = saved ? t('gui.savedTo', { path: saved }) : file.rel || file.name;
+  name.title = file.rel || file.name;
+  showDestination(li, file);
   const meta = li.querySelector('.meta');
   meta.textContent = metaText(file);
   if (file.state === 'done' && file.result && !isStale(file)) meta.title = doneDetail(file);
@@ -666,16 +747,52 @@ function uploadOne({ file, rel }) {
   });
 }
 
-async function addFiles(items) {
-  const visible = items.filter(({ file }) => !file.name.startsWith('.') && !file.name.startsWith('~$'));
-  const accepted = visible.filter(({ file }) => EXT.test(file.name));
-  const skipped = visible.length - accepted.length;
-  if (accepted.length === 0) {
+/**
+ * Uploads presentations, two at a time. `skipped` is how many of the things given held none: a file
+ * that is not a presentation, or a folder without any (what the desktop app counts, see addPaths in
+ * src/gui.ts).
+ */
+async function addFiles(items, skipped) {
+  if (items.length === 0) {
     toast(t(skipped > 0 ? 'gui.toast.noPpt' : 'gui.toast.nothing'));
     return;
   }
-  if (skipped > 0) toast(t('gui.toast.skipped', { added: accepted.length, skipped }));
-  await pool(accepted, UPLOAD_CONCURRENCY, uploadOne);
+  if (skipped > 0) toast(t('gui.toast.skipped', { added: items.length, skipped }));
+  await pool(items, UPLOAD_CONCURRENCY, uploadOne);
+}
+
+const hiddenName = (name) => name.startsWith('.') || name.startsWith('~$');
+/** Names ShibaSlim gives its results: 汇报.slim.pptx, 汇报.signed.pptx, 汇报.en.pptx. */
+const RESULT_NAME = /\.(slim|signed|en)\.[^.]+$/;
+/** The folder results go in next to the originals (RESULTS_FOLDER in src/gui.ts). */
+const RESULTS_FOLDER = 'ShibaSlim';
+/**
+ * What is taken from an added folder and its sub-folders: presentations, but not Office lock files,
+ * hidden files and folders, or ShibaSlim's own results, so a folder can be added again after it was
+ * done. The same as the desktop app (addPaths in src/gui.ts).
+ */
+const wantedInFolder = (name) => EXT.test(name) && !hiddenName(name) && !RESULT_NAME.test(name);
+const skippedFolder = (name) => name.startsWith('.') || name === RESULTS_FOLDER;
+
+/** Files given one by one: each that is not a presentation is skipped; hidden ones are not counted. */
+function looseFiles(files) {
+  const shown = files.filter((file) => !hiddenName(file.name));
+  const items = shown.filter((file) => EXT.test(file.name)).map((file) => ({ file, rel: file.name }));
+  return { items, skipped: shown.length - items.length };
+}
+
+const byRel = (a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
+
+/** The presentations in a folder the browser's folder picker gave, in path order. */
+function filesFromFolderInput(files) {
+  const items = files
+    .map((file) => ({ file, rel: file.webkitRelativePath || file.name }))
+    .filter(({ rel }) => {
+      // The first part is the chosen folder itself.
+      const parts = rel.split('/');
+      return wantedInFolder(parts.pop()) && !parts.slice(1).some(skippedFolder);
+    });
+  return { items: items.sort(byRel), skipped: items.length === 0 ? 1 : 0 };
 }
 
 /** Reads dropped files and folders. Entries must be taken synchronously, before the first await. */
@@ -685,22 +802,47 @@ async function filesFromDrop(dataTransfer) {
     .map((item) => (item.webkitGetAsEntry ? item.webkitGetAsEntry() : null))
     .filter(Boolean);
   const plain = [...dataTransfer.files];
-  if (entries.length === 0) return plain.map((file) => ({ file, rel: file.name }));
-  const out = [];
-  for (const entry of entries) await walk(entry, out);
-  return out;
+  if (entries.length === 0) return looseFiles(plain);
+  const items = [];
+  let skipped = 0;
+  for (const entry of entries) {
+    if (entry.isDirectory) {
+      const found = [];
+      await walk(entry, entry.name, found);
+      if (found.length === 0) skipped++;
+      items.push(...found.sort(byRel));
+    } else if (entry.isFile && !hiddenName(entry.name)) {
+      const file = EXT.test(entry.name) ? await fileOf(entry) : null;
+      if (file) items.push({ file, rel: file.name });
+      else skipped++;
+    }
+  }
+  return { items, skipped };
 }
 
-async function walk(entry, out) {
-  if (entry.isFile) {
-    const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
-    out.push({ file, rel: entry.fullPath.replace(/^\/+/, '') || file.name });
-  } else if (entry.isDirectory && !entry.name.startsWith('.')) {
-    const reader = entry.createReader();
+const fileOf = (entry) => new Promise((resolve, reject) => entry.file(resolve, reject)).catch(() => null);
+
+/** Collects the presentations in a dropped folder and its sub-folders (see wantedInFolder). */
+async function walk(dir, rel, out) {
+  const children = [];
+  try {
+    const reader = dir.createReader();
+    // Each call gives the next batch (at most 100 in Chrome) until an empty one.
     for (;;) {
       const batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
       if (batch.length === 0) break;
-      for (const child of batch) await walk(child, out);
+      children.push(...batch);
+    }
+  } catch {
+    // A folder that cannot be read adds nothing; the rest of the drop still does.
+    return;
+  }
+  for (const child of children) {
+    if (child.isDirectory) {
+      if (!skippedFolder(child.name)) await walk(child, `${rel}/${child.name}`, out);
+    } else if (child.isFile && wantedInFolder(child.name)) {
+      const file = await fileOf(child);
+      if (file) out.push({ file, rel: `${rel}/${child.name}` });
     }
   }
 }
@@ -729,7 +871,8 @@ window.addEventListener('drop', async (event) => {
   event.preventDefault();
   dragDepth = 0;
   el.overlay.hidden = true;
-  addFiles(await filesFromDrop(event.dataTransfer));
+  const { items, skipped } = await filesFromDrop(event.dataTransfer);
+  addFiles(items, skipped);
 });
 
 /** Says what happened to files the desktop app added by path (they arrive in the list as events). */
@@ -770,12 +913,14 @@ for (const button of document.querySelectorAll('[data-pick]')) {
   });
 }
 el.fileInput.addEventListener('change', () => {
-  addFiles([...el.fileInput.files].map((file) => ({ file, rel: file.name })));
+  const { items, skipped } = looseFiles([...el.fileInput.files]);
   el.fileInput.value = '';
+  addFiles(items, skipped);
 });
 el.folderInput.addEventListener('change', () => {
-  addFiles([...el.folderInput.files].map((file) => ({ file, rel: file.webkitRelativePath || file.name })));
+  const { items, skipped } = filesFromFolderInput([...el.folderInput.files]);
   el.folderInput.value = '';
+  addFiles(items, skipped);
 });
 
 // ---------- actions ----------
