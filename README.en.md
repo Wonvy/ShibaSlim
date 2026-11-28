@@ -95,7 +95,7 @@ The ShibaSlim page opens in your browser:
 
 Attribution needs an author (the company is optional); see [Attribution](#attribution-optional). For pictures you can set the width (1280, 1920, 2560, 3840 or any number of pixels), the format (PNG or JPG) and which slides (all, the cover only, or numbers such as `1-3, 5`); see [Slides as pictures](#slides-as-pictures). To save one file's pictures right away, click **Pictures** next to it.
 
-Point at a setting and the status bar at the bottom explains it, such as the PPI and JPEG quality the clarity stands for. The buttons beside each file (Compare, Pictures, Show, Download, Remove) are small icons whose names show when you point at them; once a file is done, the line under its name shows where the result was saved, leaving out the middle of a long path (point at it for the whole path), and the line below gives the gist of the result, with every detail when you point at it.
+Point at a setting and the status bar at the bottom explains it, such as the PPI and JPEG quality the clarity stands for. The buttons beside each file (Compare, Pictures, Show, Download, Remove) are small icons whose names show when you point at them; from the moment a file is added, the line under its name shows where its result will be saved (numbered like `(2)` where a name is taken), following **Save to** and the tasks as you change them, with a ✓ once it is written; a long path leaves out its middle (point at it for the whole path). The line below gives the gist of the result, with every detail when you point at it.
 
 After a setting changes, finished files show "Settings changed, ready to run again", and **Start** redoes them with the new settings.
 

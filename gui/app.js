@@ -92,6 +92,8 @@ const state = {
   banner: null,
   /** Files whose slides are being saved as pictures. */
   exporting: new Set(),
+  /** id -> where Start would put its results with the settings as they are now (/api/plan). */
+  plans: new Map(),
   /** The settings row under the pointer, and the one holding the focus: its explanation shows in the status bar. */
   hoverHint: null,
   focusHint: null,
@@ -334,6 +336,7 @@ function changeSettings(apply) {
   saveSettings();
   renderSettings();
   renderAll();
+  schedulePlan();
 }
 
 const setSign = (change) => changeSettings(() => (state.sign = { ...state.sign, ...change }));
@@ -386,6 +389,7 @@ const ICONS = {
   download: icon('<path d="M8 2.5v8M4.75 7.25 8 10.5l3.25-3.25M3 13.5h10"/>'),
   reveal: icon('<path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.8l1.5 1.6h4.7A1.5 1.5 0 0 1 14 6.1v5.4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/>'),
   remove: icon('<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>'),
+  check: icon('<path d="M3.5 8.5l3 3 6-7"/>'),
 };
 
 function createRow(file) {
@@ -396,7 +400,7 @@ function createRow(file) {
     <div class="badge"><span>PPT</span></div>
     <div class="info">
       <div class="name"></div>
-      <div class="dest" hidden><span class="arrow" aria-hidden="true">→</span><span class="path"></span></div>
+      <div class="dest" hidden><span class="arrow" aria-hidden="true">→</span><span class="path"></span><span class="check" hidden>${ICONS.check}</span></div>
       <div class="meta"></div>
       <div class="bar"><span></span></div>
     </div>
@@ -497,25 +501,79 @@ function doneDetail(file) {
   return lines.join('\n');
 }
 
-// ---------- where results went ----------
+// ---------- where results go ----------
+
+/** A finished file whose result is still what the settings ask for. */
+const isFresh = (file) => file.state === 'done' && Boolean(file.result) && !isStale(file) && Boolean(file.output || file.slidesDir);
 
 /**
- * Shows under the file's name where its result was saved: the presentation, or the folder of slide
- * pictures when only those were made. The tooltip has every place it saved to.
+ * Shows under the file's name where its result goes: from the moment it is added, where Start would
+ * write it with the settings as they are now (following them as they change), and once it is written,
+ * where it was, with a tick. The presentation is shown, or the folder of slide pictures when only those
+ * are made; the tooltip has every place.
  */
 function showDestination(li, file) {
   const dest = li.querySelector('.dest');
-  const saved = file.output || file.slidesDir || '';
-  dest.hidden = !saved;
+  const fresh = isFresh(file);
+  const plan = fresh ? null : state.plans.get(file.id);
+  const shown = fresh ? file.output || file.slidesDir : (plan && (plan.output || plan.slidesDir)) || '';
+  dest.hidden = !shown;
+  const check = dest.querySelector('.check');
+  // The tick takes room from the path, which then has to be fitted again.
+  const tickChanged = check.hidden === fresh;
+  check.hidden = !fresh;
+  const places = fresh
+    ? [file.output, file.slidesDir].filter(Boolean).map((p) => t('gui.savedTo', { path: p }))
+    : plan
+      ? [
+          plan.output && t(plan.replaces ? 'gui.willReplace' : 'gui.willSaveTo', { path: plan.output }),
+          plan.slidesDir && t('gui.willSaveTo', { path: plan.slidesDir }),
+        ].filter(Boolean)
+      : [];
+  dest.title = places.join('\n');
   const node = dest.querySelector('.path');
-  dest.title = [file.output, file.slidesDir]
-    .filter(Boolean)
-    .map((p) => t('gui.savedTo', { path: p }))
-    .join('\n');
-  if (node.dataset.full === saved) return;
-  node.dataset.full = saved;
-  node.textContent = saved;
-  if (saved) fitLater(node);
+  if (node.dataset.full !== shown) {
+    node.dataset.full = shown;
+    node.textContent = shown;
+  } else if (!tickChanged) {
+    return;
+  }
+  if (shown) fitLater(node);
+}
+
+function renderDestinations() {
+  for (const file of state.files.values()) {
+    const li = rowFor(file.id);
+    if (li) showDestination(li, file);
+  }
+}
+
+let planTimer = 0;
+let planSeq = 0;
+/** Asks again where results would go, shortly, once a burst of changes (a dropped folder) is over. */
+function schedulePlan() {
+  clearTimeout(planTimer);
+  planTimer = setTimeout(refreshPlans, 120);
+}
+
+async function refreshPlans() {
+  if (state.stopped || !token) return;
+  // In the order Start would take them: what is already queued, then what it would add.
+  const files = [...state.files.values()].filter((f) => !f.id.startsWith('upload-'));
+  const busy = files.filter((f) => f.state === 'queued' || f.state === 'running');
+  const ids = [...busy, ...files.filter(needsWork)].map((f) => f.id);
+  const seq = ++planSeq;
+  let plans = {};
+  if (ids.length > 0) {
+    try {
+      ({ plans } = await api('/api/plan', { method: 'POST', body: { ids, ...currentSettings() } }));
+    } catch {
+      return; // the paths stay as they were until the next change
+    }
+  }
+  if (seq !== planSeq) return; // a newer answer is on its way
+  state.plans = new Map(Object.entries(plans).filter(([, plan]) => plan));
+  renderDestinations();
 }
 
 /**
@@ -681,6 +739,9 @@ function renderAll() {
 }
 
 function upsert(file) {
+  const before = state.files.get(file.id);
+  // Where results go changes when files come and go, start or finish; not with their progress.
+  if (!before || before.state !== file.state || before.output !== file.output || before.slidesDir !== file.slidesDir) schedulePlan();
   state.files.set(file.id, file);
   renderRow(file);
   el.empty.hidden = true;
@@ -690,6 +751,7 @@ function upsert(file) {
 
 function removeFile(id) {
   state.files.delete(id);
+  schedulePlan();
   rowFor(id)?.remove();
   renderAll();
 }

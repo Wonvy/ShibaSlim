@@ -366,25 +366,30 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
   }
 
   /**
+   * The first of `names` that is an entry's to write: one it wrote before, or one nobody has, neither
+   * this session (`claims`) nor anything already on disk.
+   */
+  function firstFree(entry: Entry, names: Iterable<string>, claims: Map<string, string>): string {
+    for (const candidate of names) {
+      const owner = claims.get(samePlaceKey(candidate));
+      if (owner === entry.id || (!owner && !existsSync(candidate))) return candidate;
+    }
+    throw new Error('unreachable');
+  }
+
+  /**
    * Picks the output file for an entry: its name with .slim added (汇报.pptx -> 汇报.slim.pptx), or
    * .signed when it is only attributed, or .en when it only has English names, so a result can never
    * be mistaken for its original, and never a file this session did not write.
    */
   async function claimOutput(entry: Entry, desired: string, suffix: string): Promise<string> {
-    const { dir, name, ext } = path.parse(desired);
-    const base = name.endsWith(suffix) ? name : name + suffix;
-    for (let i = 1; ; i++) {
-      const candidate = path.join(dir, i === 1 ? `${base}${ext}` : `${base} (${i})${ext}`);
-      const owner = written.get(samePlaceKey(candidate));
-      if (owner === entry.id || (!owner && !existsSync(candidate))) {
-        if (entry.output && entry.output !== candidate && written.get(samePlaceKey(entry.output)) === entry.id) {
-          written.delete(samePlaceKey(entry.output));
-        }
-        written.set(samePlaceKey(candidate), entry.id);
-        await mkdir(dir, { recursive: true });
-        return candidate;
-      }
+    const candidate = firstFree(entry, outputNames(desired, suffix), written);
+    if (entry.output && entry.output !== candidate && written.get(samePlaceKey(entry.output)) === entry.id) {
+      written.delete(samePlaceKey(entry.output));
     }
+    written.set(samePlaceKey(candidate), entry.id);
+    await mkdir(path.dirname(candidate), { recursive: true });
+    return candidate;
   }
 
   /**
@@ -392,15 +397,51 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
    * numbered one when a folder of that name exists that this session did not make.
    */
   function claimSlidesDir(entry: Entry, desired: string): string {
-    const { dir, name } = path.parse(desired);
-    for (let i = 1; ; i++) {
-      const candidate = path.join(dir, i === 1 ? `${name}${SLIDES_SUFFIX}` : `${name}${SLIDES_SUFFIX} (${i})`);
-      const owner = written.get(samePlaceKey(candidate));
-      if (owner === entry.id || (!owner && !existsSync(candidate))) {
-        written.set(samePlaceKey(candidate), entry.id);
-        return candidate;
+    const candidate = firstFree(entry, slidesNames(desired), written);
+    written.set(samePlaceKey(candidate), entry.id);
+    return candidate;
+  }
+
+  /**
+   * Where Start would put each entry's results with these settings, worked out the same way and in
+   * the same order, so the page can show it before anything is written. Nothing is claimed. An entry
+   * whose place cannot be known yet (no usable save folder) gets null.
+   */
+  function planOutputs(ids: string[], plan: PlanSettings): Record<string, OutputPlan | null> {
+    const claims = new Map(written);
+    const plans: Record<string, OutputPlan | null> = {};
+    for (const id of ids) {
+      const entry = entries.get(id);
+      if (!entry) continue;
+      const needsFolder = !entry.origin || plan.place === 'folder';
+      if (needsFolder && plan.outDir === null) {
+        plans[id] = null;
+        continue;
       }
+      let place: string;
+      try {
+        place = placeFor(entry, { outDir: plan.outDir ?? '', place: plan.place });
+      } catch {
+        plans[id] = null;
+        continue;
+      }
+      const result: OutputPlan = {};
+      if (plan.suffix !== null) {
+        if (plan.place === 'replace' && entry.origin) {
+          result.output = entry.origin;
+          result.replaces = true;
+        } else {
+          result.output = firstFree(entry, outputNames(place, plan.suffix), claims);
+          claims.set(samePlaceKey(result.output), entry.id);
+        }
+      }
+      if (plan.images) {
+        result.slidesDir = firstFree(entry, slidesNames(place), claims);
+        claims.set(samePlaceKey(result.slidesDir), entry.id);
+      }
+      plans[id] = result;
     }
+    return plans;
   }
 
   function previewFor(entry: Entry, clarity: number): Promise<string> {
@@ -644,6 +685,13 @@ export async function startGui(options: GuiOptions = {}): Promise<GuiServer> {
       return json(res, { queued });
     }
 
+    // Where results would go with the page's settings as they are now; nothing is written.
+    if (resource === 'plan' && method === 'POST') {
+      const body = await readJson(req);
+      const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === 'string') : [];
+      return json(res, { plans: planOutputs(ids, parsePlanSettings(body)) });
+    }
+
     if (resource === 'stop' && method === 'POST') {
       for (const job of queue.splice(0)) {
         const entry = entries.get(job.id);
@@ -873,6 +921,57 @@ function parseImages(value: unknown): (NonNullable<Settings['images']> & { list:
 }
 
 /** Where the page asks results to go; the save folder unless it names another place. */
+/** The candidate names for a result: 汇报.slim.pptx, then 汇报.slim (2).pptx and so on. */
+function* outputNames(desired: string, suffix: string): Generator<string> {
+  const { dir, name, ext } = path.parse(desired);
+  const base = name.endsWith(suffix) ? name : name + suffix;
+  for (let i = 1; ; i++) yield path.join(dir, i === 1 ? `${base}${ext}` : `${base} (${i})${ext}`);
+}
+
+/** The candidate folders for slide pictures: 汇报-slides, then 汇报-slides (2) and so on. */
+function* slidesNames(desired: string): Generator<string> {
+  const { dir, name } = path.parse(desired);
+  for (let i = 1; ; i++) yield path.join(dir, i === 1 ? `${name}${SLIDES_SUFFIX}` : `${name}${SLIDES_SUFFIX} (${i})`);
+}
+
+/** Where a result would go, as /api/plan answers it. */
+interface OutputPlan {
+  /** The presentation that would be written. */
+  output?: string;
+  /** It would be written over the original. */
+  replaces?: boolean;
+  /** The folder the slide pictures would go in. */
+  slidesDir?: string;
+}
+
+/** What decides where results go: which are made, and the place. */
+interface PlanSettings {
+  /** What a written presentation gets in its name, or null when none is written. */
+  suffix: string | null;
+  images: boolean;
+  /** Null when the save folder is not usable yet. */
+  outDir: string | null;
+  place: Place;
+}
+
+/**
+ * Reads the page's settings for /api/plan as leniently as possible: they may be half filled in
+ * (an attribution without an author yet), and only where results go matters.
+ */
+function parsePlanSettings(body: Record<string, unknown>): PlanSettings {
+  const compress = body.compress === true;
+  const attribution = body.attribution !== null && body.attribution !== undefined && body.attribution !== false;
+  const englishNames = body.englishNames === true;
+  const suffix = compress ? DEFAULT_SUFFIX : attribution ? SIGNED_SUFFIX : englishNames ? ENGLISH_SUFFIX : null;
+  let outDir: string | null = null;
+  try {
+    outDir = validateDir(body.outDir);
+  } catch {
+    // shown as not known yet
+  }
+  return { suffix, images: Boolean(body.images), outDir, place: parsePlace(body.place) };
+}
+
 function parsePlace(value: unknown): Place {
   return PLACES.includes(value as Place) ? (value as Place) : 'folder';
 }

@@ -226,6 +226,9 @@ describe('gui server', () => {
     await writeFile(original, 'original');
     await writeFile(earlier, 'earlier result');
     const { data: entry } = await upload('keep.pptx');
+    // The page is told beforehand: an upload always goes to the save folder, whatever place is asked.
+    const planned = await call('/api/plan', { method: 'POST', body: { compress: true, ids: [entry.id], outDir, place: 'beside' } });
+    assert.deepEqual(planned.data.plans[entry.id], { output: path.join(outDir, 'keep.slim (2).pptx') });
     await call('/api/start', { method: 'POST', body: { compress: true, ids: [entry.id], clarity: 60, outDir } });
     const done = await waitFor(entry.id);
     assert.equal(done.output, path.join(outDir, 'keep.slim (2).pptx'));
@@ -486,6 +489,25 @@ describe('gui server', () => {
       assert.deepEqual((await call('/api/add', { method: 'POST', body: { paths: sources } })).data, { added: 3, skipped: 0, duplicate: 0 });
       // Added in the order given.
       const ids = (await call('/api/state')).data.files.filter((f) => !before.has(f.id)).map((f) => f.id);
+      // Before anything is written, the page is told where each result would go, following its settings.
+      const plan = async (settings) => (await call('/api/plan', { method: 'POST', body: { ids, ...settings } })).data.plans;
+      const gatheredPlan = await plan({ compress: true, outDir: gathered, place: 'folder' });
+      const expected = ['汇报.slim.pptx', '汇报.slim (2).pptx', '汇报.slim (3).PPTX'].map((name) => path.join(gathered, name));
+      assert.deepEqual(ids.map((id) => gatheredPlan[id]), expected.map((output) => ({ output })));
+      assert.deepEqual(await plan({ compress: true, outDir: gathered, place: 'folder' }), gatheredPlan, 'planning claims nothing');
+      assert.equal(existsSync(gathered), false, 'planning writes nothing');
+      const beside = await plan({ compress: true, attribution: null, outDir: '', place: 'beside' });
+      assert.deepEqual(ids.map((id) => beside[id].output), sources.map((s) => path.join(path.dirname(s), 'ShibaSlim', path.basename(s).replace(/\.(pptx)$/i, '.slim.$1'))));
+      // An attribution not filled in yet still says where it would go.
+      const signedOnly = await plan({ attribution: { author: '' }, outDir: gathered, place: 'same' });
+      assert.equal(signedOnly[ids[0]].output, path.join(home, '一组', '汇报.signed.pptx'));
+      const picturesOnly = await plan({ images: { width: 1280, format: 'png', pages: 'all' }, outDir: gathered, place: 'folder' });
+      assert.deepEqual(ids.map((id) => picturesOnly[id]), ['汇报-slides', '汇报-slides (2)', '汇报-slides (3)'].map((name) => ({ slidesDir: path.join(gathered, name) })));
+      assert.deepEqual((await plan({ compress: true, outDir: gathered, place: 'replace' }))[ids[2]], { output: sources[2], replaces: true });
+      // Without a usable save folder there is nothing to show yet; with no task, nowhere to go.
+      assert.equal((await plan({ compress: true, outDir: 'relative', place: 'folder' }))[ids[0]], null);
+      assert.deepEqual((await plan({ outDir: gathered, place: 'folder' }))[ids[0]], {});
+
       await call('/api/start', { method: 'POST', body: { ids, compress: true, clarity: 60, outDir: gathered, place: 'folder' } });
       const outputs = [];
       for (const id of ids) {
@@ -493,9 +515,18 @@ describe('gui server', () => {
         assert.equal(done.state, 'done', JSON.stringify(done.error));
         outputs.push(done.output);
       }
-      assert.deepEqual(outputs, ['汇报.slim.pptx', '汇报.slim (2).pptx', '汇报.slim (3).PPTX'].map((name) => path.join(gathered, name)));
+      assert.deepEqual(outputs, expected, 'results go where the plan said');
       assert.equal(readdirSync(gathered).length, 3);
-      for (const id of ids) await call(`/api/files/${id}`, { method: 'DELETE' });
+
+      // A file added afterwards is planned around the results already written.
+      const later = path.join(home, '四组', '汇报.pptx');
+      await mkdir(path.dirname(later));
+      await writeFile(later, fixture.data);
+      await call('/api/add', { method: 'POST', body: { paths: [later] } });
+      const laterId = (await call('/api/state')).data.files.find((f) => !before.has(f.id) && !ids.includes(f.id)).id;
+      const next = (await call('/api/plan', { method: 'POST', body: { ids: [laterId], compress: true, outDir: gathered, place: 'folder' } })).data.plans;
+      assert.deepEqual(next[laterId], { output: path.join(gathered, '汇报.slim (4).pptx') });
+      for (const id of [...ids, laterId]) await call(`/api/files/${id}`, { method: 'DELETE' });
     } finally {
       await rm(home, { recursive: true, force: true });
     }

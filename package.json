@@ -1,6 +1,6 @@
 {
   "name": "shibaslim",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "批量压缩 PPTX 体积的跨平台工具，重点压缩内嵌图片；提供命令行和浏览器图形界面",
   "type": "module",
   "bin": {
